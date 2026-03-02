@@ -41,7 +41,7 @@
         javaPackage = defaultJavaPackage;
         forgeMinecraftVersion = defaultForgeMinecraftVersion;
         forgeVersion = defaultForgeVersion;
-        packwizUrl = "https://example.com/modpack/pack.toml";
+        packwizUrl = "./modpack/pack.toml";
       };
     in
     {
@@ -115,42 +115,6 @@
             };
             users.groups.minecraft = { };
 
-            system.activationScripts.minecraftEula = {
-              text = ''
-                mkdir -p /srv/minecraft/global-config
-                ${concatStringsSep "\n" (
-                  mapAttrsToList (
-                    name: serverCfg:
-                    if serverCfg.enable && serverCfg.acceptEULA then
-                      "mkdir -p /srv/minecraft/${name} && echo 'eula=true' > /srv/minecraft/${name}/eula.txt && chmod 0444 /srv/minecraft/${name}/eula.txt"
-                    else
-                      ""
-                  ) cfg
-                )}
-              '';
-            };
-
-            systemd.tmpfiles.rules = lib.mkIf (cfg != { }) (
-              (mapAttrsToList (name: serverCfg: "d /srv/minecraft/${name} 0755 minecraft minecraft -") (
-                lib.filterAttrs (_: s: s.enable) cfg
-              ))
-              ++ [
-                "d /srv/minecraft/global-config 0755 minecraft minecraft -"
-              ]
-            );
-            environment.systemPackages = mapAttrsToList (
-              name: serverCfg:
-              pkgs.writeShellScriptBin "console-${name}" ''
-                sudo -u minecraft bash -c '
-                  while true; do
-                    TERM=xterm ${pkgs.screen}/bin/screen -r minecraft-${name}
-                    echo "Screen session detached or unavailable, retrying in 3 seconds..."
-                    sleep 3
-                  done
-                '
-              ''
-            ) (filterAttrs (_: s: s.enable) cfg);
-
             systemd.services = mapAttrs' (
               name: serverCfg:
               let
@@ -182,24 +146,25 @@
                   mkdir -p ${serverDir}
                   chown minecraft:minecraft ${serverDir}
 
-
-                  #!/usr/bin/env bash
                   for file in ops.json whitelist.json banned-players.json banned-ips.json; do
-                    # create file if not exist
                     [ -f "${serverCfg.configPath}/$file" ] || touch "${serverCfg.configPath}/$file"
-                    # link file
                     ln -sf "${serverCfg.configPath}/$file" "${serverDir}/$file"
                   done
 
+                  # Write eula.txt as the service user (minecraft) so we own it and can manage it.
+                  ${optionalString serverCfg.acceptEULA ''
+                    echo 'eula=true' > ${serverDir}/eula.txt
+                  ''}
+
                   if [ ! -f ${serverDir}/.installed ]; then
                     cp -r ${self}/server/. ${serverDir}/
+                    # Make everything writable now that we own all files.
                     chmod -R u+w ${serverDir}
                     ${scripts.install}/bin/install-server
                     touch ${serverDir}/.installed
                   fi
 
                   ${scripts.update}/bin/update-server
-
                 '';
 
                 script = ''
@@ -215,12 +180,35 @@
                   User = "minecraft";
                   Group = "minecraft";
                   WorkingDirectory = serverDir;
+                  PermissionsStartOnly = false;
                   Restart = "always";
                   RestartSec = "10s";
                   TimeoutStopSec = "60s";
                   KillSignal = "SIGTERM";
                 };
               }
+            ) (filterAttrs (_: s: s.enable) cfg);
+
+            systemd.tmpfiles.rules = lib.mkIf (cfg != { }) (
+              (mapAttrsToList (name: serverCfg: "d /srv/minecraft/${name} 0755 minecraft minecraft -") (
+                lib.filterAttrs (_: s: s.enable) cfg
+              ))
+              ++ [
+                "d /srv/minecraft/global-config 0755 minecraft minecraft -"
+              ]
+            );
+
+            environment.systemPackages = mapAttrsToList (
+              name: serverCfg:
+              pkgs.writeShellScriptBin "console-${name}" ''
+                sudo -u minecraft bash -c '
+                  while true; do
+                    TERM=xterm ${pkgs.screen}/bin/screen -r minecraft-${name}
+                    echo "Screen session detached or unavailable, retrying in 3 seconds..."
+                    sleep 3
+                  done
+                '
+              ''
             ) (filterAttrs (_: s: s.enable) cfg);
           };
         };
