@@ -73,6 +73,10 @@
                       type = types.bool;
                       default = false;
                     };
+                    openFirewall = mkOption {
+                      type = types.bool;
+                      default = false;
+                    };
                     port = mkOption {
                       type = types.port;
                       default = 25565;
@@ -114,6 +118,14 @@
               createHome = true;
             };
             users.groups.minecraft = { };
+
+            networking.firewall.allowedTCPPorts = lib.mapAttrsToList (_: s: s.port) (
+              lib.filterAttrs (_: s: s.openFirewall) cfg
+            );
+
+            networking.firewall.allowedUDPPorts = lib.mapAttrsToList (_: s: s.port) (
+              lib.filterAttrs (_: s: s.openFirewall) cfg
+            );
 
             systemd.services = mapAttrs' (
               name: serverCfg:
