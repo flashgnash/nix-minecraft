@@ -147,7 +147,9 @@
                   chown minecraft:minecraft ${serverDir}
 
                   for file in ops.json whitelist.json banned-players.json banned-ips.json; do
-                    [ -f "${serverCfg.configPath}/$file" ] || touch "${serverCfg.configPath}/$file"
+                    if [ ! -f "${serverCfg.configPath}/$file" ]; then
+                      echo '[]' > "${serverCfg.configPath}/$file"
+                    fi
                     ln -sf "${serverCfg.configPath}/$file" "${serverDir}/$file"
                   done
 
