@@ -176,7 +176,7 @@
                 preStart = ''
                   mkdir -p ${serverDir}
                   chown minecraft:minecraft-admin ${serverDir}
-                  chmod 2775 ${serverDir}
+                  chmod 2770 ${serverDir}
 
                   for file in ops.json whitelist.json banned-players.json banned-ips.json; do
                     if [ ! -f "${serverCfg.configPath}/$file" ]; then
@@ -223,15 +223,15 @@
               }
             ) (filterAttrs (_: s: s.enable) cfg);
 
-            # mode 2775: setgid so new files created inside inherit the
-            # minecraft-admin group; rwxrwxr-x gives owners and group full access.
+            # mode 2770: setgid so new files created inside inherit the
+            # minecraft-admin group; rwxrwx--- restricts access to owner+group only.
             systemd.tmpfiles.rules = lib.mkIf (cfg != { }) (
-              (mapAttrsToList (name: serverCfg: "d /srv/minecraft/${name} 2775 minecraft minecraft-admin -") (
+              (mapAttrsToList (name: serverCfg: "d /srv/minecraft/${name} 2770 minecraft minecraft-admin -") (
                 lib.filterAttrs (_: s: s.enable) cfg
               ))
               ++ [
-                "d /srv/minecraft 2775 minecraft minecraft-admin -"
-                "d /srv/minecraft/global-config 2775 minecraft minecraft-admin -"
+                "d /srv/minecraft 2770 minecraft minecraft-admin -"
+                "d /srv/minecraft/global-config 2770 minecraft minecraft-admin -"
               ]
             );
 
