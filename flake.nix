@@ -119,6 +119,25 @@
             };
             users.groups.minecraft = { };
 
+            # Users in this group get read/write access to all server directories
+            # and can attach to screen sessions without a password.
+            users.groups.minecraft-admin = { };
+
+            # Allow minecraft-admin members to run screen -r as the minecraft
+            # user without a password. Scoped to screen only — not a full sudo.
+            security.sudo.extraRules = [
+              {
+                groups = [ "minecraft-admin" ];
+                runAs = "minecraft";
+                commands = [
+                  {
+                    command = "${pkgs.screen}/bin/screen -r minecraft-*";
+                    options = [ "NOPASSWD" ];
+                  }
+                ];
+              }
+            ];
+
             networking.firewall.allowedTCPPorts = lib.mapAttrsToList (_: s: s.port) (
               lib.filterAttrs (_: s: s.openFirewall) cfg
             );
@@ -156,7 +175,8 @@
 
                 preStart = ''
                   mkdir -p ${serverDir}
-                  chown minecraft:minecraft ${serverDir}
+                  chown minecraft:minecraft-admin ${serverDir}
+                  chmod 2775 ${serverDir}
 
                   for file in ops.json whitelist.json banned-players.json banned-ips.json; do
                     if [ ! -f "${serverCfg.configPath}/$file" ]; then
@@ -203,27 +223,36 @@
               }
             ) (filterAttrs (_: s: s.enable) cfg);
 
+            # mode 2775: setgid so new files created inside inherit the
+            # minecraft-admin group; rwxrwxr-x gives owners and group full access.
             systemd.tmpfiles.rules = lib.mkIf (cfg != { }) (
-              (mapAttrsToList (name: serverCfg: "d /srv/minecraft/${name} 0755 minecraft minecraft -") (
+              (mapAttrsToList (name: serverCfg: "d /srv/minecraft/${name} 2775 minecraft minecraft-admin -") (
                 lib.filterAttrs (_: s: s.enable) cfg
               ))
               ++ [
-                "d /srv/minecraft/global-config 0755 minecraft minecraft -"
+                "d /srv/minecraft 2775 minecraft minecraft-admin -"
+                "d /srv/minecraft/global-config 2775 minecraft minecraft-admin -"
               ]
             );
 
-            environment.systemPackages = mapAttrsToList (
-              name: serverCfg:
-              pkgs.writeShellScriptBin "console-${name}" ''
-                sudo -u minecraft bash -c '
+            environment.systemPackages =
+              (mapAttrsToList (
+                name: serverCfg:
+                pkgs.writeShellScriptBin "console-${name}" ''
                   while true; do
-                    TERM=xterm ${pkgs.screen}/bin/screen -r minecraft-${name}
+                    TERM=xterm sudo -u minecraft ${pkgs.screen}/bin/screen -r minecraft-${name}
                     echo "Screen session detached or unavailable, retrying in 3 seconds..."
                     sleep 3
                   done
-                '
-              ''
-            ) (filterAttrs (_: s: s.enable) cfg);
+                ''
+              ) (filterAttrs (_: s: s.enable) cfg))
+              ++ (mapAttrsToList (
+                name: serverCfg:
+                pkgs.writeShellScriptBin "edit-${name}" ''
+                  cd /srv/minecraft/${name}
+                  exec ''${EDITOR:-nano} .
+                ''
+              ) (filterAttrs (_: s: s.enable) cfg));
           };
         };
 
