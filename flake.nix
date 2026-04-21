@@ -17,18 +17,42 @@
             "https://maven.minecraftforge.net/net/minecraftforge/forge/${minecraftVersion}-${loaderVersion}/forge-${minecraftVersion}-${loaderVersion}-installer.jar";
           installerJar =
             { minecraftVersion, loaderVersion }: "forge-${minecraftVersion}-${loaderVersion}-installer.jar";
-          unixArgsPath =
-            { minecraftVersion, loaderVersion }:
-            "libraries/net/minecraftforge/forge/${minecraftVersion}-${loaderVersion}/unix_args.txt";
+          launchCmd =
+            {
+              javaPackage,
+              ramGb,
+              serverDir,
+              minecraftVersion,
+              loaderVersion,
+            }:
+            ''
+              ${javaPackage}/bin/java \
+                -Xmx${toString ramGb}G \
+                -Xms${toString ramGb}G \
+                @${serverDir}/libraries/net/minecraftforge/forge/${minecraftVersion}-${loaderVersion}/unix_args.txt \
+                nogui
+            '';
         };
         neoforge = {
           installerUrl =
             { minecraftVersion, loaderVersion }:
             "https://maven.neoforged.net/releases/net/neoforged/neoforge/${loaderVersion}/neoforge-${loaderVersion}-installer.jar";
           installerJar = { minecraftVersion, loaderVersion }: "neoforge-${loaderVersion}-installer.jar";
-          unixArgsPath =
-            { minecraftVersion, loaderVersion }:
-            "libraries/net/neoforged/neoforge/${loaderVersion}/unix_args.txt";
+          launchCmd =
+            {
+              javaPackage,
+              ramGb,
+              serverDir,
+              minecraftVersion,
+              loaderVersion,
+            }:
+            ''
+              ${javaPackage}/bin/java \
+                -Xmx${toString ramGb}G \
+                -Xms${toString ramGb}G \
+                @${serverDir}/libraries/net/neoforged/neoforge/${loaderVersion}/unix_args.txt \
+                nogui
+            '';
         };
       };
 
@@ -170,10 +194,6 @@
               let
                 serverDir = "/srv/minecraft/${name}";
                 meta = loaderMeta.${serverCfg.loader};
-                urlArgs = {
-                  minecraftVersion = serverCfg.forgeMinecraftVersion;
-                  loaderVersion = serverCfg.forgeVersion;
-                };
                 scripts = makeScripts {
                   inherit (serverCfg)
                     javaPackage
@@ -225,14 +245,19 @@
                   ${scripts.update}/bin/update-server
                 '';
 
-                script = ''
-                  exec ${pkgs.screen}/bin/screen -DmS minecraft-${name} \
-                    ${serverCfg.javaPackage}/bin/java \
-                    -Xmx${toString serverCfg.ramGb}G \
-                    -Xms${toString serverCfg.ramGb}G \
-                    @${serverDir}/${meta.unixArgsPath urlArgs} \
-                    nogui
-                '';
+                script =
+                  let
+                    cmd = meta.launchCmd {
+                      inherit (serverCfg) javaPackage ramGb;
+                      inherit serverDir;
+                      minecraftVersion = serverCfg.forgeMinecraftVersion;
+                      loaderVersion = serverCfg.forgeVersion;
+                    };
+                  in
+                  ''
+                    exec ${pkgs.screen}/bin/screen -DmS minecraft-${name} \
+                      ${cmd}
+                  '';
 
                 serviceConfig = {
                   User = "minecraft";
