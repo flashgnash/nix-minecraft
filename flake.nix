@@ -10,9 +10,32 @@
       defaultForgeMinecraftVersion = "1.20.1";
       defaultForgeVersion = "47.4.10";
 
+      loaderMeta = {
+        forge = {
+          installerUrl =
+            { minecraftVersion, loaderVersion }:
+            "https://maven.minecraftforge.net/net/minecraftforge/forge/${minecraftVersion}-${loaderVersion}/forge-${minecraftVersion}-${loaderVersion}-installer.jar";
+          installerJar =
+            { minecraftVersion, loaderVersion }: "forge-${minecraftVersion}-${loaderVersion}-installer.jar";
+          unixArgsPath =
+            { minecraftVersion, loaderVersion }:
+            "libraries/net/minecraftforge/forge/${minecraftVersion}-${loaderVersion}/unix_args.txt";
+        };
+        neoforge = {
+          installerUrl =
+            { minecraftVersion, loaderVersion }:
+            "https://maven.neoforged.net/releases/net/neoforged/neoforge/${loaderVersion}/neoforge-${loaderVersion}-installer.jar";
+          installerJar = { minecraftVersion, loaderVersion }: "neoforge-${loaderVersion}-installer.jar";
+          unixArgsPath =
+            { minecraftVersion, loaderVersion }:
+            "libraries/net/neoforged/neoforge/${loaderVersion}/unix_args.txt";
+        };
+      };
+
       makeScripts =
         {
           javaPackage,
+          loader,
           forgeMinecraftVersion,
           forgeVersion,
           packwizUrl,
@@ -20,14 +43,19 @@
         }:
         let
           dir = if serverDir != null then serverDir else "$(pwd)/server";
+          meta = loaderMeta.${loader};
+          urlArgs = {
+            minecraftVersion = forgeMinecraftVersion;
+            loaderVersion = forgeVersion;
+          };
         in
         {
           install = pkgs.writeShellScriptBin "install-server" ''
             set -e
-            echo "Downloading and installing forge..."
+            echo "Downloading and installing ${loader}..."
             cd "${dir}"
-            ${pkgs.wget}/bin/wget https://maven.minecraftforge.net/net/minecraftforge/forge/${forgeMinecraftVersion}-${forgeVersion}/forge-${forgeMinecraftVersion}-${forgeVersion}-installer.jar
-            ${javaPackage}/bin/java -jar forge-${forgeMinecraftVersion}-${forgeVersion}-installer.jar --installServer
+            ${pkgs.wget}/bin/wget ${meta.installerUrl urlArgs}
+            ${javaPackage}/bin/java -jar ${meta.installerJar urlArgs} --installServer
           '';
           update = pkgs.writeShellScriptBin "update-server" ''
             set -e
@@ -39,6 +67,7 @@
 
       devScripts = makeScripts {
         javaPackage = defaultJavaPackage;
+        loader = "forge";
         forgeMinecraftVersion = defaultForgeMinecraftVersion;
         forgeVersion = defaultForgeVersion;
         packwizUrl = "./modpack/pack.toml";
@@ -85,6 +114,14 @@
                       type = types.package;
                       default = defaultJavaPackage;
                     };
+                    loader = mkOption {
+                      type = types.enum [
+                        "forge"
+                        "neoforge"
+                      ];
+                      default = "forge";
+                      description = "Mod loader to use (forge or neoforge)";
+                    };
                     forgeMinecraftVersion = mkOption {
                       type = types.str;
                       default = defaultForgeMinecraftVersion;
@@ -92,6 +129,7 @@
                     forgeVersion = mkOption {
                       type = types.str;
                       default = defaultForgeVersion;
+                      description = "Loader version (Forge or NeoForge version number)";
                     };
                     packwizUrl = mkOption {
                       type = types.str;
@@ -131,9 +169,15 @@
               name: serverCfg:
               let
                 serverDir = "/srv/minecraft/${name}";
+                meta = loaderMeta.${serverCfg.loader};
+                urlArgs = {
+                  minecraftVersion = serverCfg.forgeMinecraftVersion;
+                  loaderVersion = serverCfg.forgeVersion;
+                };
                 scripts = makeScripts {
                   inherit (serverCfg)
                     javaPackage
+                    loader
                     forgeMinecraftVersion
                     forgeVersion
                     packwizUrl
@@ -186,7 +230,7 @@
                     ${serverCfg.javaPackage}/bin/java \
                     -Xmx${toString serverCfg.ramGb}G \
                     -Xms${toString serverCfg.ramGb}G \
-                    @${serverDir}/libraries/net/minecraftforge/forge/${serverCfg.forgeMinecraftVersion}-${serverCfg.forgeVersion}/unix_args.txt \
+                    @${serverDir}/${meta.unixArgsPath urlArgs} \
                     nogui
                 '';
 
