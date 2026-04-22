@@ -50,7 +50,7 @@
               ${javaPackage}/bin/java \
                 -Xmx${toString ramGb}G \
                 -Xms${toString ramGb}G \
-                @${serverDir}/libraries/net/neoforged/neoforge/${loaderVersion}/unix_args.txt \
+                @libraries/net/neoforged/neoforge/${loaderVersion}/unix_args.txt \
                 nogui
             '';
         };
