@@ -6,7 +6,7 @@
     let
       pkgs = nixpkgs.legacyPackages.x86_64-linux;
 
-      defaultJavaPackage = pkgs.jdk17;
+      defaultJavaPackage = pkgs.jdk21;
       defaultForgeMinecraftVersion = "1.20.1";
       defaultForgeVersion = "47.4.10";
 
@@ -194,7 +194,7 @@
                 commands = [
                   {
                     command = "${pkgs.screen}/bin/screen -r minecraft-*";
-                    options = [ "NOPASSWD" ];
+                    options = [ "NOPASSWD" "SETENV" ];
                   }
                 ];
               }
@@ -275,9 +275,13 @@
                     };
                   in
                   ''
-                    ${pkgs.screen}/bin/screen -S minecraft-${name} -X quit 2>/dev/null || true
-                    ${pkgs.screen}/bin/screen -dmS minecraft-${name} \
+                    export SCREENDIR=${serverDir}/.screen
+                    mkdir -p "$SCREENDIR"
+                    chmod 700 "$SCREENDIR"
+                    ${pkgs.screen}/bin/screen -S minecraft-${name} -X quit >/dev/null 2>&1 || true
+                    ${pkgs.screen}/bin/screen -L -Logfile ${serverDir}/console.log -dmS minecraft-${name} \
                       ${cmd}
+                    sleep 5
                     while ${pkgs.screen}/bin/screen -ls | grep -q "minecraft-${name}"; do
                       sleep 2
                     done
@@ -313,7 +317,7 @@
                 name: serverCfg:
                 pkgs.writeShellScriptBin "console-${name}" ''
                   while true; do
-                    TERM=xterm sudo -u minecraft ${pkgs.screen}/bin/screen -r minecraft-${name}
+                    TERM=xterm SCREENDIR=/srv/minecraft/${name}/.screen sudo -E -u minecraft ${pkgs.screen}/bin/screen -r minecraft-${name}
                     echo "Screen session detached or unavailable, retrying in 3 seconds..."
                     sleep 3
                   done
