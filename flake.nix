@@ -243,7 +243,7 @@
                   chmod 2770 ${serverDir}
 
                   for file in ops.json whitelist.json banned-players.json banned-ips.json; do
-                    if [ ! -f "${serverCfg.configPath}/$file" ]; then
+                    if [ ! -s "${serverCfg.configPath}/$file" ]; then
                       echo '[]' > "${serverCfg.configPath}/$file"
                     fi
                     ln -sf "${serverCfg.configPath}/$file" "${serverDir}/$file"
@@ -275,9 +275,12 @@
                     };
                   in
                   ''
-                    ${pkgs.screen}/bin/screen -S minecraft-${name} -X quit || true
-                    exec ${pkgs.screen}/bin/screen -DmS minecraft-${name} \
+                    ${pkgs.screen}/bin/screen -S minecraft-${name} -X quit 2>/dev/null || true
+                    ${pkgs.screen}/bin/screen -dmS minecraft-${name} \
                       ${cmd}
+                    while ${pkgs.screen}/bin/screen -ls | grep -q "minecraft-${name}"; do
+                      sleep 2
+                    done
                   '';
 
                 serviceConfig = {
