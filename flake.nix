@@ -275,6 +275,7 @@
                     };
                   in
                   ''
+                    ${pkgs.screen}/bin/screen -S minecraft-${name} -X quit || true
                     exec ${pkgs.screen}/bin/screen -DmS minecraft-${name} \
                       ${cmd}
                   '';
