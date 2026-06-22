@@ -10,13 +10,22 @@
       defaultForgeMinecraftVersion = "1.20.1";
       defaultForgeVersion = "47.4.10";
 
+      # Fabric's command-line installer is versioned independently of the
+      # loader/Minecraft versions; it rarely changes and is broadly compatible.
+      fabricInstallerVersion = "1.1.1";
+
       loaderMeta = {
         forge = {
-          installerUrl =
-            { minecraftVersion, loaderVersion }:
-            "https://maven.minecraftforge.net/net/minecraftforge/forge/${minecraftVersion}-${loaderVersion}/forge-${minecraftVersion}-${loaderVersion}-installer.jar";
-          installerJar =
-            { minecraftVersion, loaderVersion }: "forge-${minecraftVersion}-${loaderVersion}-installer.jar";
+          installCmd =
+            {
+              javaPackage,
+              minecraftVersion,
+              loaderVersion,
+            }:
+            ''
+              ${pkgs.wget}/bin/wget https://maven.minecraftforge.net/net/minecraftforge/forge/${minecraftVersion}-${loaderVersion}/forge-${minecraftVersion}-${loaderVersion}-installer.jar
+              ${javaPackage}/bin/java -jar forge-${minecraftVersion}-${loaderVersion}-installer.jar --installServer
+            '';
           launchCmd =
             {
               javaPackage,
@@ -39,10 +48,16 @@
             '';
         };
         neoforge = {
-          installerUrl =
-            { minecraftVersion, loaderVersion }:
-            "https://maven.neoforged.net/releases/net/neoforged/neoforge/${loaderVersion}/neoforge-${loaderVersion}-installer.jar";
-          installerJar = { minecraftVersion, loaderVersion }: "neoforge-${loaderVersion}-installer.jar";
+          installCmd =
+            {
+              javaPackage,
+              minecraftVersion,
+              loaderVersion,
+            }:
+            ''
+              ${pkgs.wget}/bin/wget https://maven.neoforged.net/releases/net/neoforged/neoforge/${loaderVersion}/neoforge-${loaderVersion}-installer.jar
+              ${javaPackage}/bin/java -jar neoforge-${loaderVersion}-installer.jar --installServer
+            '';
           launchCmd =
             {
               javaPackage,
@@ -56,6 +71,39 @@
                 -Xmx${toString ramGb}G \
                 -Xms${toString ramGb}G \
                 @libraries/net/neoforged/neoforge/${loaderVersion}/unix_args.txt \
+                nogui
+            '';
+        };
+        fabric = {
+          # The Fabric installer in "server" mode writes a runnable
+          # fabric-server-launch.jar and (-downloadMinecraft) fetches the
+          # matching vanilla server jar, so the server is ready offline after.
+          installCmd =
+            {
+              javaPackage,
+              minecraftVersion,
+              loaderVersion,
+            }:
+            ''
+              ${pkgs.wget}/bin/wget https://maven.fabricmc.net/net/fabricmc/fabric-installer/${fabricInstallerVersion}/fabric-installer-${fabricInstallerVersion}.jar
+              ${javaPackage}/bin/java -jar fabric-installer-${fabricInstallerVersion}.jar server \
+                -mcversion ${minecraftVersion} \
+                -loader ${loaderVersion} \
+                -downloadMinecraft
+            '';
+          launchCmd =
+            {
+              javaPackage,
+              ramGb,
+              serverDir,
+              minecraftVersion,
+              loaderVersion,
+            }:
+            ''
+              ${javaPackage}/bin/java \
+                -Xmx${toString ramGb}G \
+                -Xms${toString ramGb}G \
+                -jar fabric-server-launch.jar \
                 nogui
             '';
         };
@@ -73,18 +121,17 @@
         let
           dir = if serverDir != null then serverDir else "$(pwd)/server";
           meta = loaderMeta.${loader};
-          urlArgs = {
-            minecraftVersion = forgeMinecraftVersion;
-            loaderVersion = forgeVersion;
-          };
         in
         {
           install = pkgs.writeShellScriptBin "install-server" ''
             set -e
             echo "Downloading and installing ${loader}..."
             cd "${dir}"
-            ${pkgs.wget}/bin/wget ${meta.installerUrl urlArgs}
-            ${javaPackage}/bin/java -jar ${meta.installerJar urlArgs} --installServer
+            ${meta.installCmd {
+              inherit javaPackage;
+              minecraftVersion = forgeMinecraftVersion;
+              loaderVersion = forgeVersion;
+            }}
           '';
           update = pkgs.writeShellScriptBin "update-server" ''
             set -e
@@ -147,9 +194,10 @@
                       type = types.enum [
                         "forge"
                         "neoforge"
+                        "fabric"
                       ];
                       default = "forge";
-                      description = "Mod loader to use (forge or neoforge)";
+                      description = "Mod loader to use (forge, neoforge or fabric)";
                     };
                     forgeMinecraftVersion = mkOption {
                       type = types.str;
@@ -158,7 +206,7 @@
                     forgeVersion = mkOption {
                       type = types.str;
                       default = defaultForgeVersion;
-                      description = "Loader version (Forge or NeoForge version number)";
+                      description = "Loader version (Forge, NeoForge or Fabric loader version number)";
                     };
                     packwizUrl = mkOption {
                       type = types.str;
