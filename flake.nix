@@ -51,6 +51,10 @@
           '';
       };
 
+      # Fabric's command-line installer is versioned independently of the
+      # loader/Minecraft versions; it rarely changes and is broadly compatible.
+      fabricInstallerVersion = "1.1.1";
+
       loaderMeta = {
         forge = {
           installCmd =
@@ -120,6 +124,40 @@
                 -Xmx${toString ramGb}G \
                 -Xms${toString ramGb}G \
                 @libraries/net/neoforged/neoforge/${loaderVersion}/unix_args.txt \
+                nogui
+            '';
+        };
+        fabric = {
+          # The Fabric installer in "server" mode writes a runnable
+          # fabric-server-launch.jar and (-downloadMinecraft) fetches the
+          # matching vanilla server jar, so the server is ready offline after.
+          installCmd =
+            {
+              javaPackage,
+              minecraftVersion,
+              loaderVersion,
+              ...
+            }:
+            ''
+              ${pkgs.wget}/bin/wget https://maven.fabricmc.net/net/fabricmc/fabric-installer/${fabricInstallerVersion}/fabric-installer-${fabricInstallerVersion}.jar
+              ${javaPackage}/bin/java -jar fabric-installer-${fabricInstallerVersion}.jar server \
+                -mcversion ${minecraftVersion} \
+                -loader ${loaderVersion} \
+                -downloadMinecraft
+            '';
+          launchCmd =
+            {
+              javaPackage,
+              ramGb,
+              serverDir,
+              minecraftVersion,
+              loaderVersion,
+            }:
+            ''
+              ${javaPackage}/bin/java \
+                -Xmx${toString ramGb}G \
+                -Xms${toString ramGb}G \
+                -jar fabric-server-launch.jar \
                 nogui
             '';
         };
@@ -214,11 +252,12 @@
                       type = types.enum [
                         "forge"
                         "neoforge"
+                        "fabric"
                         "paper"
                         "folia"
                       ];
                       default = "forge";
-                      description = "Server software to use (Forge, NeoForge, Paper, or Folia)";
+                      description = "Server software to use (Forge, NeoForge, Fabric, Paper, or Folia)";
                     };
                     forgeMinecraftVersion = mkOption {
                       type = types.str;
@@ -233,7 +272,7 @@
                     forgeVersion = mkOption {
                       type = types.str;
                       default = defaultForgeVersion;
-                      description = "Loader version (Forge or NeoForge version number)";
+                      description = "Loader version (Forge, NeoForge or Fabric loader version number)";
                     };
                     paperBuild = mkOption {
                       type = types.strMatching "(latest|[1-9][0-9]*)";
