@@ -10,13 +10,65 @@
       defaultForgeMinecraftVersion = "1.20.1";
       defaultForgeVersion = "47.4.10";
 
+      makePaperMeta = project: {
+        installCmd =
+          {
+            minecraftVersion,
+            paperBuild,
+            ...
+          }:
+          ''
+            buildsUrl="https://fill.papermc.io/v3/projects/${project}/versions/${minecraftVersion}/builds"
+            userAgent="nix-minecraft/1.0 (https://github.com/flashgnash/nix-minecraft)"
+            builds="$(${pkgs.curl}/bin/curl -fsSL -H "User-Agent: $userAgent" "$buildsUrl")"
+
+            if [ "${paperBuild}" = latest ]; then
+              downloadUrl="$(printf '%s' "$builds" | ${pkgs.jq}/bin/jq -r 'first(.[] | select(.channel == "STABLE") | .downloads."server:default".url) // empty')"
+            else
+              downloadUrl="$(printf '%s' "$builds" | ${pkgs.jq}/bin/jq -r --arg build "${paperBuild}" 'first(.[] | select((.id | tostring) == $build) | .downloads."server:default".url) // empty')"
+            fi
+
+            if [ -z "$downloadUrl" ]; then
+              echo "No ${project} build '${paperBuild}' found for Minecraft ${minecraftVersion}" >&2
+              exit 1
+            fi
+
+            ${pkgs.curl}/bin/curl -fL -H "User-Agent: $userAgent" -o server.jar.tmp "$downloadUrl"
+            mv server.jar.tmp server.jar
+          '';
+        launchCmd =
+          {
+            javaPackage,
+            ramGb,
+            ...
+          }:
+          ''
+            ${javaPackage}/bin/java \
+              -Xmx${toString ramGb}G \
+              -Xms${toString ramGb}G \
+              -jar server.jar \
+              nogui
+          '';
+      };
+
       loaderMeta = {
         forge = {
-          installerUrl =
-            { minecraftVersion, loaderVersion }:
-            "https://maven.minecraftforge.net/net/minecraftforge/forge/${minecraftVersion}-${loaderVersion}/forge-${minecraftVersion}-${loaderVersion}-installer.jar";
-          installerJar =
-            { minecraftVersion, loaderVersion }: "forge-${minecraftVersion}-${loaderVersion}-installer.jar";
+          installCmd =
+            {
+              javaPackage,
+              minecraftVersion,
+              loaderVersion,
+              ...
+            }:
+            let
+              installerUrl =
+                "https://maven.minecraftforge.net/net/minecraftforge/forge/${minecraftVersion}-${loaderVersion}/forge-${minecraftVersion}-${loaderVersion}-installer.jar";
+              installerJar = "forge-${minecraftVersion}-${loaderVersion}-installer.jar";
+            in
+            ''
+              ${pkgs.wget}/bin/wget "${installerUrl}"
+              ${javaPackage}/bin/java -jar "${installerJar}" --installServer
+            '';
           launchCmd =
             {
               javaPackage,
@@ -39,10 +91,22 @@
             '';
         };
         neoforge = {
-          installerUrl =
-            { minecraftVersion, loaderVersion }:
-            "https://maven.neoforged.net/releases/net/neoforged/neoforge/${loaderVersion}/neoforge-${loaderVersion}-installer.jar";
-          installerJar = { minecraftVersion, loaderVersion }: "neoforge-${loaderVersion}-installer.jar";
+          installCmd =
+            {
+              javaPackage,
+              minecraftVersion,
+              loaderVersion,
+              ...
+            }:
+            let
+              installerUrl =
+                "https://maven.neoforged.net/releases/net/neoforged/neoforge/${loaderVersion}/neoforge-${loaderVersion}-installer.jar";
+              installerJar = "neoforge-${loaderVersion}-installer.jar";
+            in
+            ''
+              ${pkgs.wget}/bin/wget "${installerUrl}"
+              ${javaPackage}/bin/java -jar "${installerJar}" --installServer
+            '';
           launchCmd =
             {
               javaPackage,
@@ -59,22 +123,25 @@
                 nogui
             '';
         };
+        paper = makePaperMeta "paper";
+        folia = makePaperMeta "folia";
       };
 
       makeScripts =
         {
           javaPackage,
           loader,
-          forgeMinecraftVersion,
+          minecraftVersion,
           forgeVersion,
+          paperBuild,
           packwizUrl,
           serverDir ? null,
         }:
         let
           dir = if serverDir != null then serverDir else "$(pwd)/server";
           meta = loaderMeta.${loader};
-          urlArgs = {
-            minecraftVersion = forgeMinecraftVersion;
+          installArgs = {
+            inherit javaPackage minecraftVersion paperBuild;
             loaderVersion = forgeVersion;
           };
         in
@@ -83,8 +150,7 @@
             set -e
             echo "Downloading and installing ${loader}..."
             cd "${dir}"
-            ${pkgs.wget}/bin/wget ${meta.installerUrl urlArgs}
-            ${javaPackage}/bin/java -jar ${meta.installerJar urlArgs} --installServer
+            ${meta.installCmd installArgs}
           '';
           update = pkgs.writeShellScriptBin "update-server" ''
             set -e
@@ -97,8 +163,9 @@
       devScripts = makeScripts {
         javaPackage = defaultJavaPackage;
         loader = "forge";
-        forgeMinecraftVersion = defaultForgeMinecraftVersion;
+        minecraftVersion = defaultForgeMinecraftVersion;
         forgeVersion = defaultForgeVersion;
+        paperBuild = "latest";
         packwizUrl = "./modpack/pack.toml";
       };
     in
@@ -118,7 +185,7 @@
           options.services.minecraft-servers = mkOption {
             type = types.attrsOf (
               types.submodule (
-                { name, ... }:
+                { name, config, ... }:
                 {
                   options = {
                     enable = mkEnableOption "Minecraft modpack server";
@@ -147,18 +214,34 @@
                       type = types.enum [
                         "forge"
                         "neoforge"
+                        "paper"
+                        "folia"
                       ];
                       default = "forge";
-                      description = "Mod loader to use (forge or neoforge)";
+                      description = "Server software to use (Forge, NeoForge, Paper, or Folia)";
                     };
                     forgeMinecraftVersion = mkOption {
                       type = types.str;
                       default = defaultForgeMinecraftVersion;
+                      description = "Legacy Minecraft version option; prefer minecraftVersion";
+                    };
+                    minecraftVersion = mkOption {
+                      type = types.str;
+                      default = config.forgeMinecraftVersion;
+                      description = "Minecraft version to install";
                     };
                     forgeVersion = mkOption {
                       type = types.str;
                       default = defaultForgeVersion;
                       description = "Loader version (Forge or NeoForge version number)";
+                    };
+                    paperBuild = mkOption {
+                      type = types.strMatching "(latest|[1-9][0-9]*)";
+                      default = "latest";
+                      description = ''
+                        PaperMC build ID to install, or "latest" for the newest stable build.
+                        Applies to Paper and Folia. Folia plugins must explicitly support Folia.
+                      '';
                     };
                     packwizUrl = mkOption {
                       type = types.str;
@@ -222,8 +305,9 @@
                   inherit (serverCfg)
                     javaPackage
                     loader
-                    forgeMinecraftVersion
+                    minecraftVersion
                     forgeVersion
+                    paperBuild
                     packwizUrl
                     ;
                   inherit serverDir;
@@ -275,7 +359,7 @@
                     cmd = meta.launchCmd {
                       inherit (serverCfg) javaPackage ramGb;
                       inherit serverDir;
-                      minecraftVersion = serverCfg.forgeMinecraftVersion;
+                      minecraftVersion = serverCfg.minecraftVersion;
                       loaderVersion = serverCfg.forgeVersion;
                     };
                   in
