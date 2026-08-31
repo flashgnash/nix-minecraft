@@ -43,11 +43,11 @@ let
         </div>
         ${optionalString (address != null) ''
           <p class="row">server address
-            <code class="copy" onclick="copyText(this)" title="click to copy">${address}</code>
+            <code class="copy" onclick="selectText(this)" title="click to select, then copy">${address}</code>
           </p>
         ''}
         <p class="row">packwiz url
-          <code class="copy" onclick="copyText(this)" title="click to copy">${s.packwizUrl}</code>
+          <code class="copy" onclick="selectText(this)" title="click to select, then copy">${s.packwizUrl}</code>
         </p>
         ${buttons}
       </section>
@@ -82,8 +82,7 @@ let
       .muted { color: #6b7280; font-size: .85rem; }
       details { margin-top: 2rem; color: #9aa0ac; font-size: .9rem; }
       details code { background: #14161b; padding: .1rem .4rem; border-radius: 4px; }
-      #copied { position: fixed; bottom: 1rem; right: 1rem; background: #3b6ea5;
-                padding: .5rem 1rem; border-radius: 8px; opacity: 0; transition: opacity .3s; }
+      code.copy::selection { background: #3b6ea5; }
     </style>
     </head>
     <body>
@@ -97,16 +96,17 @@ let
         <li>In Prism: <b>Add Instance → Import → Browse</b> and pick the downloaded zip — or just drag the zip onto the Prism window.</li>
         <li>Launch. The pack downloads its mods on first start and keeps itself updated on every launch.</li>
       </ol>
-      <p>Using the Modrinth App or another launcher? Grab the <code>.mrpack</code> or CurseForge zip instead (these don't self-update). The server address is prefilled in your multiplayer list where supported — otherwise click it above to copy.</p>
+      <p>Using the Modrinth App or another launcher? Grab the <code>.mrpack</code> or CurseForge zip instead (these don't self-update). The server address is prefilled in your multiplayer list where supported — otherwise click it above to select it.</p>
     </details>
-    <div id="copied">copied!</div>
     <script>
-      function copyText(el) {
-        navigator.clipboard.writeText(el.textContent).then(() => {
-          const t = document.getElementById('copied');
-          t.style.opacity = 1;
-          setTimeout(() => t.style.opacity = 0, 1200);
-        });
+      // Select-on-click only — no clipboard API, which ad blockers
+      // (rightly) treat as a ClickFix-attack signature.
+      function selectText(el) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
       }
     </script>
     </body>
