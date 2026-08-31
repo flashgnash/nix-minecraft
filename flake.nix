@@ -261,7 +261,28 @@
                 networking.firewall.allowedTCPPorts = mkIf routerCfg.openFirewall [ routerCfg.port ];
               }
             ))
-            (mkIf (cfg != { }) {
+            (mkIf (cfg != { }) (
+            let
+              # Runs as the minecraft user (via the scoped sudo rule below) and
+              # emits a tar stream of the log files an agent needs for
+              # debugging, keeping them as separate files.
+              dumpScripts = mapAttrs (
+                name: _:
+                pkgs.writeShellScriptBin "dump-minecraft-logs-${name}" ''
+                  dir=/srv/minecraft/${name}
+                  tmp=$(${pkgs.coreutils}/bin/mktemp -d)
+                  trap '${pkgs.coreutils}/bin/rm -rf "$tmp"' EXIT
+                  cp "$dir/console.log" "$tmp/" 2>/dev/null
+                  cp "$dir/logs/latest.log" "$tmp/" 2>/dev/null
+                  mkdir -p "$tmp/crash-reports"
+                  ls -t "$dir/crash-reports" 2>/dev/null | head -3 | while read -r f; do
+                    cp "$dir/crash-reports/$f" "$tmp/crash-reports/" 2>/dev/null
+                  done
+                  ${pkgs.gnutar}/bin/tar -C "$tmp" -cf - .
+                ''
+              ) (filterAttrs (_: s: s.enable) cfg);
+            in
+            {
             users.users.minecraft = {
               isSystemUser = true;
               group = "minecraft";
@@ -285,7 +306,10 @@
                     command = "${pkgs.screen}/bin/screen -r minecraft-*";
                     options = [ "NOPASSWD" "SETENV" ];
                   }
-                ];
+                ] ++ (mapAttrsToList (name: script: {
+                  command = "${script}/bin/dump-minecraft-logs-${name}";
+                  options = [ "NOPASSWD" ];
+                }) dumpScripts);
               }
             ];
 
@@ -440,10 +464,47 @@
                   cd /srv/minecraft/${name}
                   exec ''${EDITOR:-nano} .
                 ''
-              ) (filterAttrs (_: s: s.enable) cfg));
-            })
+              ) (filterAttrs (_: s: s.enable) cfg))
+              ++ (mapAttrsToList (
+                name: script:
+                # Streams a tar of journal + server logs + crash reports to
+                # stdout (separate files inside), so it works locally and
+                # over ssh alike:
+                #   ssh <host> logs-<name> | tar -xC /tmp/minecraft-<name>-logs
+                pkgs.writeShellScriptBin "logs-${name}" ''
+                  set -e
+                  tmp=$(mktemp -d)
+                  trap 'rm -rf "$tmp"' EXIT
+                  journalctl -u minecraft-${name} -n 300 --no-pager > "$tmp/journal.log" 2>&1 \
+                    || echo "(journal unavailable to this user)" > "$tmp/journal.log"
+                  sudo -u minecraft ${script}/bin/dump-minecraft-logs-${name} \
+                    | ${pkgs.gnutar}/bin/tar -xC "$tmp"
+                  ${pkgs.gnutar}/bin/tar -C "$tmp" -cf - .
+                ''
+              ) dumpScripts);
+            }))
           ];
         };
+
+      # Local-side companion to the module's logs-<name> command: pulls the
+      # log bundle from a remote server host and unpacks it under /tmp so an
+      # agent can grep the individual files.
+      #   mc-logs <server-name> [host]   (host defaults to glados)
+      packages.x86_64-linux.mc-logs = pkgs.writeShellScriptBin "mc-logs" ''
+        set -e
+        name=$1
+        host=''${2:-glados}
+        if [ -z "$name" ]; then
+          echo "usage: mc-logs <server-name> [host]" >&2
+          exit 1
+        fi
+        out=/tmp/minecraft-$name-logs
+        rm -rf "$out"
+        mkdir -p "$out"
+        ssh "$host" "logs-$name" | ${pkgs.gnutar}/bin/tar -xC "$out"
+        echo "$out"
+        ls "$out" "$out/crash-reports" 2>/dev/null
+      '';
 
       devShells.x86_64-linux.default = pkgs.mkShell {
         packages = [
