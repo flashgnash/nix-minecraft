@@ -306,6 +306,14 @@
                   fi
 
                   ${scripts.update}/bin/update-server
+
+                  # The port option is authoritative: the router maps to it, so the
+                  # server must actually bind it, whatever server.properties says.
+                  if [ -f ${serverDir}/server.properties ] && grep -q '^server-port=' ${serverDir}/server.properties; then
+                    sed -i 's/^server-port=.*/server-port=${toString serverCfg.port}/' ${serverDir}/server.properties
+                  else
+                    echo 'server-port=${toString serverCfg.port}' >> ${serverDir}/server.properties
+                  fi
                 '';
 
                 script =
