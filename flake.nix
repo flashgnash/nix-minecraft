@@ -479,7 +479,17 @@
                     || echo "(journal unavailable to this user)" > "$tmp/journal.log"
                   sudo -u minecraft ${script}/bin/dump-minecraft-logs-${name} \
                     | ${pkgs.gnutar}/bin/tar -xC "$tmp"
-                  ${pkgs.gnutar}/bin/tar -C "$tmp" -cf - .
+                  if [ -t 1 ]; then
+                    # Interactive use: unpack to /tmp like mc-logs does locally.
+                    out=/tmp/minecraft-${name}-logs
+                    rm -rf "$out"
+                    mkdir -p "$out"
+                    cp -r "$tmp"/. "$out"/
+                    echo "$out"
+                    ls "$out" "$out/crash-reports" 2>/dev/null
+                  else
+                    ${pkgs.gnutar}/bin/tar -C "$tmp" -cf - .
+                  fi
                 ''
               ) dumpScripts);
             }))
