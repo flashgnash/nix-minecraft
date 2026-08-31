@@ -178,6 +178,17 @@
                       type = types.str;
                       description = "URL to the packwiz pack.toml for the modpack";
                     };
+                    acceptsProxyProtocol = mkOption {
+                      type = types.nullOr types.bool;
+                      default = null;
+                      description = ''
+                        Whether this server can parse PROXY protocol headers
+                        itself. Default (null) decides by loader: true for
+                        Paper/Folia, false otherwise. Set true for a modded
+                        server with e.g. ProperProxyProtocol installed to
+                        skip the stripper and receive real client IPs.
+                      '';
+                    };
                     ramGb = mkOption {
                       type = types.int;
                       default = 4;
@@ -196,7 +207,11 @@
               let
                 mcRouter = import ./mc-router.nix { inherit pkgs; };
                 enabledServers = filterAttrs (_: s: s.enable) cfg;
-                speaksProxyProtocol = s: elem s.loader [ "paper" "folia" ];
+                speaksProxyProtocol = s:
+                  if s.acceptsProxyProtocol != null then
+                    s.acceptsProxyProtocol
+                  else
+                    elem s.loader [ "paper" "folia" ];
                 needsStripper = s: routerCfg.proxyProtocol && !(speaksProxyProtocol s);
                 stripPortOffset = 10000;
                 # The router must target the stripper (not the server) for
