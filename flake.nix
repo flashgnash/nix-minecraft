@@ -66,8 +66,26 @@
         let
           cfg = config.services.minecraft-servers;
           routerCfg = config.services.minecraft-router;
+          webCfg = config.services.minecraft-web;
         in
         {
+          options.services.minecraft-web = {
+            enable = mkEnableOption "static modpack listing website with install links";
+            hostName = mkOption {
+              type = types.str;
+              example = "packs.mc.example.com";
+              description = ''
+                Domain to serve the site on (nginx virtual host). A subdomain
+                of the router's wildcard record needs no extra DNS work.
+              '';
+            };
+            enableACME = mkOption {
+              type = types.bool;
+              default = true;
+              description = "Get a certificate and force HTTPS for the site.";
+            };
+          };
+
           options.services.minecraft-router = {
             enable = mkEnableOption "hostname-based Minecraft router (mc-router)";
             domainSuffix = mkOption {
@@ -203,6 +221,24 @@
           };
 
           config = mkMerge [
+            (mkIf webCfg.enable {
+              services.nginx = {
+                enable = mkDefault true;
+                virtualHosts.${webCfg.hostName} = {
+                  root = import ./web.nix {
+                    inherit pkgs lib;
+                    servers = filterAttrs (_: s: s.enable) cfg;
+                    domainSuffix = if routerCfg.enable then routerCfg.domainSuffix else null;
+                  };
+                  enableACME = webCfg.enableACME;
+                  forceSSL = webCfg.enableACME;
+                };
+              };
+              networking.firewall.allowedTCPPorts = [
+                80
+                443
+              ];
+            })
             (mkIf routerCfg.enable (
               let
                 mcRouter = import ./mc-router.nix { inherit pkgs; };
