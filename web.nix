@@ -26,7 +26,7 @@ let
       buttons =
         if repo != null then ''
           <div class="buttons">
-            <a class="btn primary" href="${dl "-prism.zip"}" title="Self-updating PrismLauncher instance (small download, fetches mods on first launch)">Install — Prism</a>
+            <a class="btn primary" href="${dl "-prism.zip"}" title="Self-updating PrismLauncher instance (small download, fetches mods on first launch)">Download — Prism</a>
             <a class="btn" href="${dl "-prism-preinstalled.zip"}" title="PrismLauncher instance with all mods bundled (large download, instant first launch)">Prism (preinstalled)</a>
             <a class="btn" href="${dl ".mrpack"}" title="Modrinth format — double-click imports into Prism or the Modrinth App">.mrpack</a>
             <a class="btn" href="${dl "-curseforge.zip"}" title="CurseForge launcher import">CurseForge</a>
@@ -92,7 +92,7 @@ let
       <summary>How to install (Windows / Mac / Linux)</summary>
       <ol>
         <li>Install <a href="https://prismlauncher.org/download/">PrismLauncher</a> (free, all platforms).</li>
-        <li>Click <b>Install — Prism</b> above to download the pack.</li>
+        <li>Click <b>Download — Prism</b> above to download the pack.</li>
         <li>In Prism: <b>Add Instance → Import → Browse</b> and pick the downloaded zip — or just drag the zip onto the Prism window.</li>
         <li>Launch. The pack downloads its mods on first start and keeps itself updated on every launch.</li>
       </ol>
