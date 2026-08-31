@@ -65,8 +65,42 @@
         with lib;
         let
           cfg = config.services.minecraft-servers;
+          routerCfg = config.services.minecraft-router;
         in
         {
+          options.services.minecraft-router = {
+            enable = mkEnableOption "hostname-based Minecraft router (mc-router)";
+            domainSuffix = mkOption {
+              type = types.str;
+              example = "mc.example.com";
+              description = ''
+                Domain suffix for server hostnames. Every enabled server in
+                services.minecraft-servers is automatically routed as
+                <name>.<domainSuffix> — point a single wildcard DNS record
+                (*.<domainSuffix>) at this host and new servers need no
+                per-server DNS work at all.
+              '';
+            };
+            port = mkOption {
+              type = types.port;
+              default = 25565;
+              description = "Public port the router listens on. Backend servers must use other ports.";
+            };
+            defaultServer = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              description = ''
+                Name of the server (attribute name in services.minecraft-servers)
+                that receives connections not matching any hostname, e.g.
+                players connecting by raw IP.
+              '';
+            };
+            openFirewall = mkOption {
+              type = types.bool;
+              default = true;
+            };
+          };
+
           options.services.minecraft-servers = mkOption {
             type = types.attrsOf (
               types.submodule (
@@ -146,7 +180,41 @@
             description = "Minecraft modpack server instances";
           };
 
-          config = mkIf (cfg != { }) {
+          config = mkMerge [
+            (mkIf routerCfg.enable (
+              let
+                mcRouter = import ./mc-router.nix { inherit pkgs; };
+                enabledServers = filterAttrs (_: s: s.enable) cfg;
+                mappings = concatStringsSep "," (
+                  mapAttrsToList (
+                    name: s: "${name}.${routerCfg.domainSuffix}=127.0.0.1:${toString s.port}"
+                  ) enabledServers
+                );
+                defaultArg = optionalString (routerCfg.defaultServer != null)
+                  " -default 127.0.0.1:${toString cfg.${routerCfg.defaultServer}.port}";
+              in
+              {
+                assertions = [
+                  {
+                    assertion = all (s: s.port != routerCfg.port) (attrValues enabledServers);
+                    message = "services.minecraft-router.port (${toString routerCfg.port}) collides with a backend server's port — move that server to another port.";
+                  }
+                ];
+                systemd.services.mc-router = {
+                  description = "Minecraft hostname router (mc-router)";
+                  wantedBy = [ "multi-user.target" ];
+                  after = [ "network.target" ];
+                  serviceConfig = {
+                    DynamicUser = true;
+                    Restart = "always";
+                    RestartSec = "5s";
+                    ExecStart = "${mcRouter}/bin/mc-router -port ${toString routerCfg.port} -mapping ${escapeShellArg mappings}${defaultArg}";
+                  };
+                };
+                networking.firewall.allowedTCPPorts = mkIf routerCfg.openFirewall [ routerCfg.port ];
+              }
+            ))
+            (mkIf (cfg != { }) {
             users.users.minecraft = {
               isSystemUser = true;
               group = "minecraft";
@@ -305,7 +373,8 @@
                   exec ''${EDITOR:-nano} .
                 ''
               ) (filterAttrs (_: s: s.enable) cfg));
-          };
+            })
+          ];
         };
 
       devShells.x86_64-linux.default = pkgs.mkShell {
