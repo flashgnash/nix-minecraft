@@ -86,6 +86,17 @@
               default = 25565;
               description = "Public port the router listens on. Backend servers must use other ports.";
             };
+            proxyProtocol = mkOption {
+              type = types.bool;
+              default = false;
+              description = ''
+                Forward real client IPs to backends using PROXY protocol.
+                Paper/Folia backends parse it natively and are configured
+                automatically. Other loaders can't parse the header, so they
+                get a local stripper instance of mc-router in front — they
+                keep working but still see connections from 127.0.0.1.
+              '';
+            };
             defaultServer = mkOption {
               type = types.nullOr types.str;
               default = null;
@@ -185,13 +196,20 @@
               let
                 mcRouter = import ./mc-router.nix { inherit pkgs; };
                 enabledServers = filterAttrs (_: s: s.enable) cfg;
+                speaksProxyProtocol = s: elem s.loader [ "paper" "folia" ];
+                needsStripper = s: routerCfg.proxyProtocol && !(speaksProxyProtocol s);
+                stripPortOffset = 10000;
+                # The router must target the stripper (not the server) for
+                # backends that can't parse the PROXY header themselves.
+                backendPort = s: if needsStripper s then s.port + stripPortOffset else s.port;
                 mappings = concatStringsSep "," (
                   mapAttrsToList (
-                    name: s: "${name}.${routerCfg.domainSuffix}=127.0.0.1:${toString s.port}"
+                    name: s: "${name}.${routerCfg.domainSuffix}=127.0.0.1:${toString (backendPort s)}"
                   ) enabledServers
                 );
                 defaultArg = optionalString (routerCfg.defaultServer != null)
-                  " -default 127.0.0.1:${toString cfg.${routerCfg.defaultServer}.port}";
+                  " -default 127.0.0.1:${toString (backendPort cfg.${routerCfg.defaultServer})}";
+                proxyArg = optionalString routerCfg.proxyProtocol " -use-proxy-protocol";
               in
               {
                 assertions = [
@@ -200,17 +218,31 @@
                     message = "services.minecraft-router.port (${toString routerCfg.port}) collides with a backend server's port — move that server to another port.";
                   }
                 ];
-                systemd.services.mc-router = {
-                  description = "Minecraft hostname router (mc-router)";
-                  wantedBy = [ "multi-user.target" ];
-                  after = [ "network.target" ];
-                  serviceConfig = {
-                    DynamicUser = true;
-                    Restart = "always";
-                    RestartSec = "5s";
-                    ExecStart = "${mcRouter}/bin/mc-router -port ${toString routerCfg.port} -mapping ${escapeShellArg mappings}${defaultArg}";
+                systemd.services = {
+                  mc-router = {
+                    description = "Minecraft hostname router (mc-router)";
+                    wantedBy = [ "multi-user.target" ];
+                    after = [ "network.target" ];
+                    serviceConfig = {
+                      DynamicUser = true;
+                      Restart = "always";
+                      RestartSec = "5s";
+                      ExecStart = "${mcRouter}/bin/mc-router -port ${toString routerCfg.port} -mapping ${escapeShellArg mappings}${proxyArg}${defaultArg}";
+                    };
                   };
-                };
+                } // mapAttrs' (name: s:
+                  nameValuePair "mc-router-strip-${name}" {
+                    description = "PROXY protocol stripper for Minecraft server ${name}";
+                    wantedBy = [ "multi-user.target" ];
+                    after = [ "network.target" ];
+                    serviceConfig = {
+                      DynamicUser = true;
+                      Restart = "always";
+                      RestartSec = "5s";
+                      ExecStart = "${mcRouter}/bin/mc-router -port ${toString (s.port + stripPortOffset)} -receive-proxy-protocol -trusted-proxies 127.0.0.1/32 -default 127.0.0.1:${toString s.port}";
+                    };
+                  }
+                ) (filterAttrs (_: s: needsStripper s) enabledServers);
                 networking.firewall.allowedTCPPorts = mkIf routerCfg.openFirewall [ routerCfg.port ];
               }
             ))
@@ -314,6 +346,19 @@
                   else
                     echo 'server-port=${toString serverCfg.port}' >> ${serverDir}/server.properties
                   fi
+
+                  # Behind the router with PROXY protocol on, Paper-family
+                  # servers must accept the header or every connection fails.
+                  ${optionalString
+                    (routerCfg.enable && routerCfg.proxyProtocol
+                      && elem serverCfg.loader [ "paper" "folia" ]) ''
+                    mkdir -p ${serverDir}/config
+                    if grep -q 'proxy-protocol:' ${serverDir}/config/paper-global.yml 2>/dev/null; then
+                      sed -i 's/proxy-protocol: false/proxy-protocol: true/' ${serverDir}/config/paper-global.yml
+                    else
+                      printf 'proxies:\n  proxy-protocol: true\n' >> ${serverDir}/config/paper-global.yml
+                    fi
+                  ''}
                 '';
 
                 script =
