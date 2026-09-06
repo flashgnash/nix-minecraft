@@ -19,14 +19,13 @@
   launchCmd =
     {
       javaPackage,
-      ramGb,
+      jvmFlags,
       loaderVersion,
       ...
     }:
     ''
       ${javaPackage}/bin/java \
-        -Xmx${toString ramGb}G \
-        -Xms${toString ramGb}G \
+        ${jvmFlags} \
         @libraries/net/neoforged/neoforge/${loaderVersion}/unix_args.txt \
         nogui
     '';

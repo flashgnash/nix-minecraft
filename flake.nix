@@ -290,6 +290,18 @@
                       default = 4;
                       description = "RAM allocated to the server in GB";
                     };
+                    aikarFlags = mkOption {
+                      type = types.bool;
+                      default = true;
+                      description = ''
+                        Launch with Aikar's flags (https://mcflags.emc.gs) —
+                        the community-standard G1 tuning that trades stock
+                        ergonomics' long stop-the-world mixed collections for
+                        gradual concurrent work, taming GC-driven lag spikes.
+                        Tunes within ramGb; needs no extra headroom. Disable
+                        for plain -Xmx/-Xms.
+                      '';
+                    };
                     exportPrometheus = mkOption {
                       type = types.bool;
                       default = false;
@@ -1001,6 +1013,11 @@
                         cmd = meta.launchCmd {
                           inherit (serverCfg) javaPackage ramGb;
                           inherit serverDir;
+                          jvmFlags = import ./jvm-flags.nix {
+                            inherit lib;
+                            inherit (serverCfg) ramGb;
+                            aikar = serverCfg.aikarFlags;
+                          };
                           minecraftVersion = serverCfg.minecraftVersion;
                           loaderVersion = serverCfg.forgeVersion;
                         };

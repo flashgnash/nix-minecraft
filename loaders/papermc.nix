@@ -29,13 +29,12 @@
   launchCmd =
     {
       javaPackage,
-      ramGb,
+      jvmFlags,
       ...
     }:
     ''
       ${javaPackage}/bin/java \
-        -Xmx${toString ramGb}G \
-        -Xms${toString ramGb}G \
+        ${jvmFlags} \
         -jar server.jar \
         nogui
     '';

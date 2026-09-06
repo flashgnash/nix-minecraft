@@ -20,10 +20,11 @@
   launchCmd =
     {
       javaPackage,
-      ramGb,
+      jvmFlags,
       serverDir,
       minecraftVersion,
       loaderVersion,
+      ...
     }:
     # Modern Forge (1.17+) ships an @-args file from the installer;
     # legacy Forge (pre-1.17, e.g. 1.8.9) ships a runnable universal
@@ -31,9 +32,9 @@
     pkgs.writeShellScript "forge-launch-${minecraftVersion}-${loaderVersion}" ''
       argsFile="${serverDir}/libraries/net/minecraftforge/forge/${minecraftVersion}-${loaderVersion}/unix_args.txt"
       if [ -f "$argsFile" ]; then
-        exec ${javaPackage}/bin/java -Xmx${toString ramGb}G -Xms${toString ramGb}G @"$argsFile" nogui
+        exec ${javaPackage}/bin/java ${jvmFlags} @"$argsFile" nogui
       else
-        exec ${javaPackage}/bin/java -Xmx${toString ramGb}G -Xms${toString ramGb}G \
+        exec ${javaPackage}/bin/java ${jvmFlags} \
           -jar "${serverDir}/forge-${minecraftVersion}-${loaderVersion}-universal.jar" nogui
       fi
     '';
