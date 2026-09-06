@@ -68,6 +68,9 @@
           routerCfg = config.services.minecraft-router;
           webCfg = config.services.minecraft-web;
           metricsCfg = config.services.minecraft-metrics;
+          # Loopback RCON for the lag auto-profiler lives at port+offset,
+          # far from the router's stripper range (port+10000).
+          rconPortOffset = 20000;
         in
         {
           options.services.minecraft-web = {
@@ -303,6 +306,22 @@
                         platform.
                       '';
                     };
+                    sparkOnLag = mkOption {
+                      type = types.bool;
+                      default = false;
+                      description = ''
+                        Auto-profile lag spikes: when the status poller sees
+                        TPS below its threshold (default 15), it runs a 60s
+                        `spark profiler` over loopback RCON and appends the
+                        report URL — which names the chunks/entities burning
+                        the tick — to /var/lib/minecraft-web/lag-reports.jsonl
+                        (see `mc-lag-reports`). RCON is enabled on loopback
+                        with a host-generated password automatically. The
+                        spark mod itself must ship in the pack from a trusted
+                        platform (`packwiz mr add spark`, side=server).
+                        Requires services.minecraft-web (the poller).
+                      '';
+                    };
                     metricsPort = mkOption {
                       type = types.nullOr types.port;
                       default = null;
@@ -377,16 +396,24 @@
                     ];
                 statusConfig = pkgs.writeText "minecraft-web-status.json" (
                   builtins.toJSON {
-                    servers = mapAttrsToList (name: s: {
-                      inherit name;
-                      inherit (s) port loader packwizUrl;
-                      address = addressOf name;
-                      metricsPort = scrapePortOf s;
-                      iconUrls = if isClientLoader s then iconUrlsOf s else [ ];
-                      proxyProtocol = routerCfg.enable && routerCfg.proxyProtocol && speaksProxyProtocol s;
-                    }) enabledWebServers;
+                    servers = mapAttrsToList (
+                      name: s:
+                      {
+                        inherit name;
+                        inherit (s) port loader packwizUrl;
+                        address = addressOf name;
+                        metricsPort = scrapePortOf s;
+                        iconUrls = if isClientLoader s then iconUrlsOf s else [ ];
+                        proxyProtocol = routerCfg.enable && routerCfg.proxyProtocol && speaksProxyProtocol s;
+                      }
+                      // optionalAttrs s.sparkOnLag {
+                        rconPort = s.port + rconPortOffset;
+                        rconPasswordFile = "/var/lib/minecraft-rcon/${name}";
+                      }
+                    ) enabledWebServers;
                   }
                 );
+                anySparkOnLag = any (s: s.sparkOnLag) (attrValues enabledWebServers);
               in
               {
                 services.nginx = {
@@ -438,6 +465,28 @@
                   group = "minecraft-web";
                 };
                 users.groups.minecraft-web = { };
+
+                # Lag-spike spark reports collected by the poller.
+                environment.systemPackages = mkIf anySparkOnLag [
+                  (pkgs.writeShellApplication {
+                    name = "mc-lag-reports";
+                    runtimeInputs = [
+                      pkgs.jq
+                      pkgs.util-linux
+                    ];
+                    text = ''
+                      file=/var/lib/minecraft-web/lag-reports.jsonl
+                      if [ ! -s "$file" ]; then
+                        echo "no lag reports captured yet"
+                        exit 0
+                      fi
+                      jq -rs '
+                        (["WHEN","SERVER","TPS","REPORT"],
+                         (.[] | [(.timestamp | split("+")[0]), .server, (.tps|tostring), (.url // ("<no url: " + (.response // "?") + ">"))]))
+                        | @tsv' "$file" | column -t
+                    '';
+                  })
+                ];
 
                 networking.firewall.allowedTCPPorts = [
                   80
@@ -695,6 +744,13 @@
                 ) (filterAttrs (_: s: s.enable) cfg);
               in
               {
+                assertions = [
+                  {
+                    assertion = !(any (s: s.enable && s.sparkOnLag) (attrValues cfg)) || webCfg.enable;
+                    message = "sparkOnLag needs services.minecraft-web enabled — its status poller is what watches TPS and runs the profiles.";
+                  }
+                ];
+
                 users.users.minecraft = {
                   isSystemUser = true;
                   group = "minecraft";
@@ -855,6 +911,29 @@
                       else
                         echo 'server-port=${toString serverCfg.port}' >> ${serverDir}/server.properties
                       fi
+
+                      ${optionalString serverCfg.sparkOnLag ''
+                        # --- RCON for the lag auto-profiler ---
+                        # Loopback only in practice: the firewall never opens the
+                        # rcon port. Password generated once on the host, readable
+                        # by the status poller (minecraft-web group).
+                        mkdir -p /var/lib/minecraft-rcon
+                        chmod 750 /var/lib/minecraft-rcon
+                        chgrp minecraft-web /var/lib/minecraft-rcon
+                        if [ ! -s /var/lib/minecraft-rcon/${name} ]; then
+                          (umask 037; head -c 24 /dev/urandom | base64 | tr -d '/+=\n' > /var/lib/minecraft-rcon/${name})
+                        fi
+                        chgrp minecraft-web /var/lib/minecraft-rcon/${name}
+                        rcon_pw=$(cat /var/lib/minecraft-rcon/${name})
+                        for kv in 'enable-rcon=true' 'rcon.port=${toString (serverCfg.port + rconPortOffset)}' "rcon.password=$rcon_pw" 'broadcast-rcon-to-ops=false'; do
+                          key=''${kv%%=*}
+                          if grep -q "^$key=" ${serverDir}/server.properties; then
+                            sed -i "s|^$key=.*|$kv|" ${serverDir}/server.properties
+                          else
+                            echo "$kv" >> ${serverDir}/server.properties
+                          fi
+                        done
+                      ''}
 
                       # Behind the router with PROXY protocol on, Paper-family
                       # servers must accept the header or every connection fails.

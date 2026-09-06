@@ -15,10 +15,12 @@
 
 import json
 import os
+import re
 import socket
 import struct
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -28,6 +30,12 @@ STATE_DIR = os.environ.get("STATE_DIRECTORY", "/var/lib/minecraft-web")
 OUT_PATH = os.path.join(STATE_DIR, "status.json")
 ICON_DIR = os.path.join(STATE_DIR, "icons")
 TPS_STATE_PATH = os.path.join(STATE_DIR, ".tps-state.json")
+LAG_REPORT_PATH = os.path.join(STATE_DIR, "lag-reports.jsonl")
+
+# Lag auto-profiler: sustained low TPS triggers a spark profile over RCON.
+LAG_TPS = float(os.environ.get("LAG_TPS_THRESHOLD", "15"))
+LAG_COOLDOWN = float(os.environ.get("LAG_COOLDOWN_SECONDS", "1800"))
+LAG_PROFILE_SECS = float(os.environ.get("LAG_PROFILE_SECONDS", "60"))
 
 
 def load_json(path, default):
@@ -235,6 +243,85 @@ def ensure_icon(name, urls):
     return None
 
 
+# ---- lag auto-profiler (spark over RCON) -------------------------------------
+#
+# When a server's TPS sits below LAG_TPS, run `spark profiler` on it for
+# LAG_PROFILE_SECS via RCON and append the viewer URL (which names the chunks
+# and entities burning the tick) to lag-reports.jsonl. One profile per server
+# per LAG_COOLDOWN. Needs the spark mod in the pack (from Modrinth) and RCON
+# on loopback — both wired up by the nix module when sparkOnLag is set.
+
+_lag_lock = threading.Lock()
+_lag_state = {}  # name -> {"running": bool, "last": ts}
+
+
+def rcon_command(port, password, command, timeout=5.0):
+    def packet(pid, ptype, body):
+        data = struct.pack("<ii", pid, ptype) + body.encode() + b"\x00\x00"
+        return struct.pack("<i", len(data)) + data
+
+    def read_packet(sock):
+        (length,) = struct.unpack("<i", _recv_exact(sock, 4))
+        data = _recv_exact(sock, length)
+        pid, ptype = struct.unpack("<ii", data[:8])
+        return pid, ptype, data[8:-2].decode("utf-8", "replace")
+
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(packet(1, 3, password))
+        pid, _, _ = read_packet(sock)
+        if pid == -1:
+            raise ValueError("rcon auth failed")
+        sock.sendall(packet(2, 2, command))
+        _, _, resp = read_packet(sock)
+        return resp
+
+
+def _run_lag_profile(name, rcon_port, password_file, tps):
+    try:
+        with open(password_file) as f:
+            password = f.read().strip()
+        rcon_command(rcon_port, password, "spark profiler start")
+        time.sleep(LAG_PROFILE_SECS)
+        resp = rcon_command(rcon_port, password, "spark profiler stop", timeout=30.0)
+        m = re.search(r"https://spark\.lucko\.me/\S+", _strip_codes(resp))
+        entry = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "server": name,
+            "tps": tps,
+            "url": m.group(0) if m else None,
+        }
+        if not m:
+            entry["response"] = _strip_codes(resp)[:400]
+        with open(LAG_REPORT_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        print("lag-profiler: %s tps=%.1f -> %s" % (name, tps, entry["url"]), file=sys.stderr)
+    except Exception as e:
+        print("lag-profiler: %s failed: %s" % (name, e), file=sys.stderr)
+    finally:
+        with _lag_lock:
+            _lag_state[name] = {"running": False, "last": time.time()}
+
+
+def maybe_profile_lag(server_conf, tps):
+    rcon_port = server_conf.get("rconPort")
+    password_file = server_conf.get("rconPasswordFile")
+    if not rcon_port or not password_file or tps is None or tps >= LAG_TPS:
+        return
+    name = server_conf["name"]
+    with _lag_lock:
+        st = _lag_state.get(name, {})
+        if st.get("running") or time.time() - st.get("last", 0) < LAG_COOLDOWN:
+            return
+        _lag_state[name] = {"running": True, "last": st.get("last", 0)}
+    print("lag-profiler: %s tps=%.1f — starting spark profile" % (name, tps), file=sys.stderr)
+    threading.Thread(
+        target=_run_lag_profile,
+        args=(name, rcon_port, password_file, tps),
+        daemon=True,
+    ).start()
+
+
 # ---- packwiz metadata (name, description, mod list) --------------------------
 #
 # pack.toml gives name/version/description; the index.toml it points at lists
@@ -345,6 +432,7 @@ def poll_once(servers):
                     if dt > 0:
                         entry["tps"] = round(max(0.0, min(20.0, dc / dt)), 1)
                 new_tps_state[name] = {"count": count, "t": now}
+            maybe_profile_lag(s, entry["tps"])
 
         # Only client packs carry a pack icon.
         if s.get("iconUrls"):
