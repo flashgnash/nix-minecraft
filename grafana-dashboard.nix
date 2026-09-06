@@ -164,8 +164,9 @@ in
       }
       "ms"
       [
+        # dimensions idling below 0.2 ms are noise, not lag sources
         (q "A"
-          ''1000 * sum by (name) (rate(mc_dimension_tick_seconds_sum{${sel}}[5m])) / sum by (name) (rate(mc_dimension_tick_seconds_count{${sel}}[5m]))''
+          ''(1000 * sum by (name) (rate(mc_dimension_tick_seconds_sum{${sel}}[5m])) / sum by (name) (rate(mc_dimension_tick_seconds_count{${sel}}[5m]))) > 0.2''
           "{{name}}"
         )
       ]
@@ -178,7 +179,7 @@ in
         h = 8;
       }
       "percent"
-      [ (q "A" ''100 * sum by (name) (rate(mc_dimension_tick_seconds_sum{${sel}}[5m]))'' "{{name}}") ]
+      [ (q "A" ''(100 * sum by (name) (rate(mc_dimension_tick_seconds_sum{${sel}}[5m]))) > 0.1'' "{{name}}") ]
     )
     # Timeseries on purpose: a step here lined up with a TPS dip says the
     # lag spike was a dimension change loading chunks.
@@ -190,7 +191,7 @@ in
         h = 8;
       }
       "none"
-      [ (q "A" ''sum by (name) (mc_dimension_chunks_loaded{${sel}})'' "{{name}}") ]
+      [ (q "A" ''sum by (name) (mc_dimension_chunks_loaded{${sel}}) > 0'' "{{name}}") ]
       { }
     )
     # Beneath TPS so item-count spikes line up with TPS dips.
