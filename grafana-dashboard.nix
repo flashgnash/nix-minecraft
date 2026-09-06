@@ -121,8 +121,8 @@ in
     )
     (ts "Server tick duration"
       {
-        x = 12;
-        y = 0;
+        x = 0;
+        y = 32;
         w = 12;
         h = 8;
       }
@@ -157,9 +157,9 @@ in
     )
     (pie "Tick time by dimension (lag source)"
       {
-        x = 0;
-        y = 16;
-        w = 8;
+        x = 12;
+        y = 0;
+        w = 12;
         h = 8;
       }
       "ms"
@@ -173,9 +173,9 @@ in
     )
     (pie "Tick budget spent per dimension"
       {
-        x = 8;
-        y = 16;
-        w = 8;
+        x = 12;
+        y = 8;
+        w = 12;
         h = 8;
       }
       "percent"
@@ -185,9 +185,9 @@ in
     # lag spike was a dimension change loading chunks.
     (ts "Chunks loaded by dimension"
       {
-        x = 16;
+        x = 0;
         y = 16;
-        w = 8;
+        w = 12;
         h = 8;
       }
       "none"
@@ -208,8 +208,8 @@ in
     )
     (ts "Entities by type (top 15)"
       {
-        x = 12;
-        y = 8;
+        x = 0;
+        y = 40;
         w = 12;
         h = 8;
       }
@@ -220,7 +220,7 @@ in
     (ts "Players online"
       {
         x = 0;
-        y = 25;
+        y = 48;
         w = 12;
         h = 8;
       }
@@ -233,7 +233,7 @@ in
       title = "Who is on";
       gridPos = {
         x = 12;
-        y = 25;
+        y = 16;
         w = 12;
         h = 8;
       };
@@ -273,7 +273,7 @@ in
     (ts "GC time share"
       {
         x = 0;
-        y = 33;
+        y = 24;
         w = 12;
         h = 8;
       }
@@ -287,8 +287,8 @@ in
     )
     (ts "JVM heap"
       {
-        x = 12;
-        y = 33;
+        x = 0;
+        y = 56;
         w = 12;
         h = 8;
       }
