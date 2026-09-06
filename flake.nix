@@ -463,7 +463,14 @@
                     analytics.reporting_enabled = false;
                     # 26.05 dropped the default secret_key; generated on the
                     # host at first start (preStart below), never in the store.
-                    security.secret_key = "$__file{/var/lib/grafana/secret_key}";
+                    # The admin password is generated the same way — the NixOS
+                    # default is admin/admin, which would let any ACL-admitted
+                    # viewer take over the instance. Read it on the host:
+                    #   cat /var/lib/grafana/admin_password
+                    security = {
+                      secret_key = "$__file{/var/lib/grafana/secret_key}";
+                      admin_password = "$__file{/var/lib/grafana/admin_password}";
+                    };
                   };
                   provision = {
                     enable = true;
@@ -488,10 +495,12 @@
                 # Runs as the grafana user, so the key lands 0600 in its own
                 # state dir. head reads a finite amount first — no SIGPIPE.
                 systemd.services.grafana.preStart = ''
-                  if [ ! -s /var/lib/grafana/secret_key ]; then
-                    umask 077
-                    printf '%s' "$(head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | cut -c1-32)" > /var/lib/grafana/secret_key
-                  fi
+                  umask 077
+                  for f in secret_key admin_password; do
+                    if [ ! -s "/var/lib/grafana/$f" ]; then
+                      printf '%s' "$(head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | cut -c1-32)" > "/var/lib/grafana/$f"
+                    fi
+                  done
                 '';
               }
             ))
