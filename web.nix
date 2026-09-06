@@ -21,6 +21,9 @@
   lib,
   servers,
   domainSuffix,
+  # Grafana base URL; the link is revealed client-side only after a
+  # reachability probe succeeds (it's typically tailnet-only).
+  dashboardUrl ? null,
 }:
 with lib;
 let
@@ -100,6 +103,14 @@ let
     </div>
   '';
 
+  # The big icon inside each pack panel is the launcher's own logo — the
+  # modpack's icon lives in the pack header above the tabs.
+  launcherLogos = {
+    prism = "prism.svg";
+    mrpack = "modrinth.png";
+    curseforge = "curseforge.png";
+  };
+
   # Card icon precedence (applied client-side): the server-icon.png (favicon
   # from the ping) first, then the pack icon, then the loader's brand logo.
   loaderIconFiles = {
@@ -131,17 +142,16 @@ let
       heroBlock = l: ''
         <div class="lv pack-panel lv-${l.key}" draggable="true" ondragstart="dragPack(event)" data-url="${dlKey l.primary}" title="Drag this card onto your launcher">
           <span class="pack-icon">
-            <img class="pack-icon-img" alt="" />
-            ${loaderIcon s.loader}
+            <img class="launcher-logo" src="/assets/${launcherLogos.${l.key}}" alt="${l.label} logo" />
           </span>
           <div class="hero-text">
             <div class="hero-title">${l.heroTitle}</div>
-            <div class="hero-btns">
-              <a class="btn primary" draggable="false" href="${dlKey l.primary}" title="${artifacts.${l.primary}.desc}">${l.heroBtn}</a>
-              ${optionalString (l ? secondary)
-                ''<a class="btn subtle" draggable="false" href="${dlKey l.secondary}" title="${artifacts.${l.secondary}.desc}">${l.secondaryLabel}</a>''}
-            </div>
             <div class="hero-hint">${l.heroHint}</div>
+          </div>
+          <div class="hero-btns">
+            <a class="btn primary" draggable="false" href="${dlKey l.primary}" title="${artifacts.${l.primary}.desc}">${l.heroBtn}</a>
+            ${optionalString (l ? secondary)
+              ''<a class="btn subtle" draggable="false" href="${dlKey l.secondary}" title="${artifacts.${l.secondary}.desc}">${l.secondaryLabel}</a>''}
           </div>
         </div>
       '';
@@ -171,9 +181,24 @@ let
         else
           ''
             <div class="pack-section">
-              <h3 class="pack-section-title">Modpack</h3>
+              <div class="pack-head">
+                <span class="pack-avatar"><img class="pack-icon-img" alt="" />${loaderIcon s.loader}</span>
+                <div class="pack-head-text">
+                  <h3 class="pack-name" data-k="pack-name">${name}</h3>
+                  <div class="pack-desc" data-k="pack-desc" hidden></div>
+                  <div class="pack-meta">
+                    <span class="chip" data-k="pack-version" hidden></span>
+                    <span class="chip" data-k="mod-count" hidden></span>
+                  </div>
+                </div>
+              </div>
               ${tabStrip}
               ${concatMapStringsSep "\n" heroBlock launchers}
+              <details class="mod-list" data-k="mod-list" hidden>
+                <summary>Mod list</summary>
+                <input class="mod-search" type="search" placeholder="filter mods…" oninput="filterMods(this)" />
+                <ul class="mods" data-k="mods"></ul>
+              </details>
             </div>
           '';
     in
@@ -185,7 +210,6 @@ let
           ) ''<span class="mini-icon"><img class="pack-icon-img" alt="" />${loaderIcon s.loader}</span>''}
           <div class="head-left">
             <h2>${name}</h2>
-            ${addressBit}
             <span class="stat motd" data-k="motd"></span>
           </div>
           <div class="head-right">
@@ -197,10 +221,15 @@ let
             </div>
             <div class="stats" data-status="${name}">
               <span class="stat players-stat"><b data-k="players">—</b> online</span>
-              <span class="stat">TPS <b class="tps-val" data-k="tps">—</b></span>
+              <span class="stat">TPS <b class="tps-val" data-k="tps">—</b>${
+                optionalString (dashboardUrl != null) ''
+                  <a class="dash-link" href="${dashboardUrl}/d/minecraft?var-server=${name}" target="_blank" rel="noopener" title="open the metrics dashboard" hidden><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g fill="currentColor"><rect x="4" y="11" width="3.4" height="8"/><rect x="10.3" y="5" width="3.4" height="14"/><rect x="16.6" y="13" width="3.4" height="6"/></g></svg></a>
+                ''
+              }</span>
             </div>
           </div>
         </div>
+        <div class="addr-line">${addressBit}</div>
         ${body}
       </section>
     '';
@@ -285,8 +314,9 @@ let
       .card.online .status-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
       .card.offline .status-dot { background: var(--critical); box-shadow: none; }
 
-      /* Subtle join address under the title (never wraps; copy button beside) */
-      .addr-row { display: flex; align-items: center; gap: .35rem; margin-top: .15rem; min-width: 0; }
+      /* Subtle join address on its own full-width row under the head */
+      .addr-line { margin-top: .3rem; }
+      .addr-row { display: flex; align-items: center; gap: .35rem; min-width: 0; }
       .addr {
         display: inline-block; font-size: .78rem; color: var(--dim);
         background: var(--inset); padding: .15rem .5rem; border-radius: 6px; cursor: pointer;
@@ -294,7 +324,7 @@ let
       }
       code.addr:hover { background: #0d1418; color: #c8d0dc; }
       code.addr::selection { background: var(--accent); color: #12180b; }
-      .addr.muted { cursor: default; background: none; padding-left: 0; margin-top: .15rem; }
+      .addr.muted { cursor: default; background: none; padding-left: 0; }
       .copy-btn {
         flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
         width: 22px; height: 22px; padding: 3px; background: none; border: 0;
@@ -322,10 +352,56 @@ let
       body[data-launcher="mrpack"] .lv-mrpack,
       body[data-launcher="curseforge"] .lv-curseforge { display: block; }
 
-      /* Modpack section: tab strip + one draggable pack panel per launcher */
+      /* Modpack section: pack identity + tab strip + one draggable panel per launcher */
       .pack-section { margin-top: .9rem; padding-top: .7rem; border-top: 1px solid var(--border); }
-      .pack-section-title { margin: 0 0 .5rem; font-size: .95rem; font-weight: 700; }
+      .pack-head { display: flex; align-items: flex-start; gap: .7rem; margin-bottom: .6rem; }
+      .pack-avatar {
+        flex: 0 0 auto; width: 44px; height: 44px; display: flex;
+        align-items: center; justify-content: center; overflow: hidden;
+        background: var(--inset); border: 1px solid var(--border); border-radius: 8px;
+      }
+      .pack-avatar .pack-icon-glyph { width: 28px; height: 28px; object-fit: contain; }
+      .pack-head-text { min-width: 0; }
+      .pack-name { margin: 0; font-size: 1.05rem; }
+      .pack-desc { color: var(--dim); font-size: .82rem; margin-top: .1rem; }
+      .pack-meta { display: flex; gap: .4rem; margin-top: .3rem; flex-wrap: wrap; }
+      .pack-meta .chip:empty { display: none; }
+
+      /* Searchable, collapsible mod list */
+      details.mod-list { margin-top: .8rem; color: var(--dim); font-size: .85rem; }
+      details.mod-list summary {
+        cursor: pointer; color: var(--text); font-weight: 700; list-style: none; padding: .2rem 0;
+      }
+      details.mod-list summary::-webkit-details-marker { display: none; }
+      details.mod-list summary::before { content: "▸ "; color: var(--accent); }
+      details.mod-list[open] summary::before { content: "▾ "; }
+      .mod-search {
+        width: 100%; margin: .4rem 0; padding: .4rem .6rem; font: inherit; font-size: .85rem;
+        background: var(--inset); color: var(--text);
+        border: 1px solid var(--border); border-radius: 6px; outline: none;
+      }
+      .mod-search:focus { border-color: var(--accent-dark); }
+      ul.mods {
+        list-style: none; margin: 0; padding: 0; max-height: 240px; overflow-y: auto;
+        columns: 2; column-gap: 1rem;
+      }
+      ul.mods li { padding: .1rem 0; break-inside: avoid; }
+      ul.mods li[hidden] { display: none; }
+
+      /* Player-list tooltip on the online count (native titles proved flaky) */
+      .players-stat { position: relative; }
       .players-stat.has-players { cursor: help; text-decoration: underline dotted var(--dim); text-underline-offset: 3px; }
+      .players-stat.has-players:hover::after {
+        content: attr(data-players); position: absolute; right: 0; top: calc(100% + 4px);
+        background: var(--inset); border: 1px solid var(--border); border-radius: 6px;
+        padding: .4rem .6rem; color: var(--text); white-space: pre; text-align: left;
+        font-size: .8rem; line-height: 1.4; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+      }
+
+      /* Metrics dashboard link next to TPS (revealed only if reachable) */
+      .dash-link { color: var(--dim); margin-left: .35rem; vertical-align: middle; }
+      .dash-link:hover { color: var(--accent); }
+      .dash-link svg { width: 14px; height: 14px; }
       .pack-panel {
         background: var(--inset); border: 1px dashed var(--border); border-radius: 10px;
         padding: .9rem 1rem; cursor: grab;
@@ -339,7 +415,7 @@ let
         background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
         color: var(--accent); overflow: hidden; pointer-events: none;
       }
-      .pack-icon .pack-icon-glyph { width: 62px; height: 62px; object-fit: contain; }
+      .pack-icon .launcher-logo { width: 62px; height: 62px; object-fit: contain; }
       .pack-icon-img { display: none; width: 100%; height: 100%; object-fit: cover; }
 
       /* Small header avatar on server-only cards (server-icon / loader logo) */
@@ -351,7 +427,11 @@ let
       .mini-icon .pack-icon-glyph { width: 26px; height: 26px; object-fit: contain; }
       .hero-text { overflow: hidden; }
       .hero-title { font-size: 1.05rem; font-weight: 700; margin-bottom: .55rem; }
-      .hero-btns { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+      /* Buttons clear the floated icon: full panel width, side by side */
+      .hero-btns { display: flex; align-items: center; flex-wrap: nowrap; gap: .5rem; min-width: 0; clear: both; padding-top: .65rem; }
+      .hero-btns .btn { white-space: nowrap; }
+      .hero-btns .btn.primary { flex: 0 0 auto; }
+      .hero-btns .btn.subtle { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
       .hero-hint { color: var(--dim); font-size: .78rem; margin-top: .5rem; }
 
       /* Buttons */
@@ -470,6 +550,31 @@ let
         e.dataTransfer.setData("text/uri-list", url);
       }
 
+      function filterMods(input) {
+        var q = input.value.toLowerCase();
+        var items = input.parentElement.querySelectorAll(".mods li");
+        for (var i = 0; i < items.length; i++) {
+          items[i].hidden = items[i].textContent.toLowerCase().indexOf(q) < 0;
+        }
+      }
+
+      ${optionalString (dashboardUrl != null) ''
+        // Reveal the dashboard links only if this browser can actually reach
+        // Grafana (it's tailnet-only, so most visitors can't — they never see
+        // the link). no-cors: an opaque response still proves reachability.
+        (function () {
+          var links = document.querySelectorAll(".dash-link");
+          if (!links.length) return;
+          var ctl = window.AbortController ? new AbortController() : null;
+          if (ctl) setTimeout(function () { ctl.abort(); }, 4000);
+          fetch("${dashboardUrl}/api/health", { mode: "no-cors", cache: "no-store", signal: ctl && ctl.signal })
+            .then(function () {
+              for (var i = 0; i < links.length; i++) links[i].hidden = false;
+            })
+            .catch(function () {});
+        })();
+      ''}
+
       var LAUNCHERS = ["prism", "mrpack", "curseforge"];
       function setCookie(k, v) { document.cookie = k + "=" + v + ";path=/;max-age=31536000;samesite=lax"; }
       function getCookie(k) {
@@ -517,8 +622,36 @@ let
               if (stat) {
                 var names = s.player_names || [];
                 stat.classList.toggle("has-players", names.length > 0);
-                stat.title = names.length ? names.join("\n") :
-                  (s.players_online > 0 ? "player list unavailable" : "");
+                var tip = names.join("\n");
+                if (stat.dataset.players !== tip) stat.dataset.players = tip;
+              }
+            }
+            // Packwiz metadata: pack name/description/version + mod list
+            var pack = s.pack;
+            if (pack) {
+              var pn = box.querySelector("[data-k=pack-name]");
+              if (pn && pack.name) pn.textContent = pack.name;
+              var pd = box.querySelector("[data-k=pack-desc]");
+              if (pd && pack.description) { pd.hidden = false; pd.textContent = pack.description; }
+              var pv = box.querySelector("[data-k=pack-version]");
+              if (pv && pack.version) { pv.hidden = false; pv.textContent = "v" + pack.version; }
+              var mc = box.querySelector("[data-k=mod-count]");
+              if (mc && pack.mod_count) { mc.hidden = false; mc.textContent = pack.mod_count + " mods"; }
+              var ml = box.querySelector("[data-k=mod-list]");
+              if (ml && pack.mods && pack.mods.length) {
+                ml.hidden = false;
+                var modsKey = pack.mods.join("|");
+                if (ml.dataset.mods !== modsKey) {
+                  ml.dataset.mods = modsKey;
+                  ml.querySelector("summary").textContent = "Mod list (" + pack.mods.length + ")";
+                  var ul = ml.querySelector(".mods");
+                  ul.textContent = "";
+                  for (var mi = 0; mi < pack.mods.length; mi++) {
+                    var li = document.createElement("li");
+                    li.textContent = pack.mods[mi];
+                    ul.appendChild(li);
+                  }
+                }
               }
             }
             var tps = box.querySelector("[data-k=tps]");

@@ -67,6 +67,7 @@
           cfg = config.services.minecraft-servers;
           routerCfg = config.services.minecraft-router;
           webCfg = config.services.minecraft-web;
+          metricsCfg = config.services.minecraft-metrics;
         in
         {
           options.services.minecraft-web = {
@@ -83,6 +84,43 @@
               type = types.bool;
               default = true;
               description = "Get a certificate and force HTTPS for the site.";
+            };
+            dashboardUrl = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              example = "https://myhost.tailnet.ts.net";
+              description = ''
+                URL of the Grafana metrics dashboard. When set, the site shows
+                a small graph link next to each TPS readout — but only after a
+                client-side reachability probe of <url>/api/health succeeds,
+                so visitors who can't reach the dashboard (e.g. it's only
+                exposed on a tailnet) never see the link at all.
+              '';
+            };
+          };
+
+          options.services.minecraft-metrics = {
+            enable = mkEnableOption ''
+              Prometheus + Grafana for the servers' exported metrics. Both
+              listen on loopback only — expose Grafana however you like
+              (e.g. `tailscale serve` for tailnet-only access governed by ACLs)
+            '';
+            prometheusPort = mkOption {
+              type = types.port;
+              default = 9090;
+            };
+            grafanaPort = mkOption {
+              type = types.port;
+              default = 3000;
+            };
+            grafanaDomain = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              example = "myhost.tailnet.ts.net";
+              description = ''
+                External domain Grafana is reached through (sets root_url so
+                redirects and cookies work behind the proxy).
+              '';
             };
           };
 
@@ -216,14 +254,16 @@
                       type = types.bool;
                       default = false;
                       description = ''
-                        Auto-install the cpburnz "Prometheus Exporter" mod
-                        (forge/fabric/neoforge only) into this server's mods
-                        directory if the pack doesn't already ship an exporter,
-                        matching the server's loader + Minecraft version, and
-                        configure it to listen on 127.0.0.1:<metricsPort>. The
-                        status site's poller scrapes that endpoint for TPS.
-                        Ignored (with a log warning) for paper/folia — that
-                        ecosystem uses a different plugin.
+                        Manage the config of the cpburnz "Prometheus Exporter"
+                        mod (forge/fabric/neoforge only) so it listens on
+                        127.0.0.1:<metricsPort>, where the status site's poller
+                        and Prometheus scrape it for TPS. The mod jar itself
+                        must be shipped by the modpack from a trusted platform
+                        (`packwiz curseforge add prometheus-exporter`,
+                        side=server) — jars are never downloaded ad hoc. A log
+                        warning is emitted if the mod is missing, and for
+                        paper/folia, which have no exporter on a trusted
+                        platform.
                       '';
                     };
                     metricsPort = mkOption {
@@ -234,8 +274,8 @@
                         server (e.g. the Prometheus Exporter mod). The status
                         poller scrapes 127.0.0.1:<metricsPort> for TPS and player
                         metrics. When exportPrometheus is true this also sets the
-                        auto-installed exporter's listen port (defaults to 19565
-                        if left null).
+                        listen port in the managed exporter config (defaults to
+                        19565 if left null).
                       '';
                     };
                   };
@@ -285,14 +325,28 @@
                     "neoforge"
                     "fabric"
                   ];
+                # Same rule as the router: paper/folia parse PROXY protocol
+                # natively, so when the router runs in proxyProtocol mode the
+                # poller's direct pings must send the header too or the
+                # backend drops them (and the card shows a false "offline").
+                speaksProxyProtocol =
+                  s:
+                  if s.acceptsProxyProtocol != null then
+                    s.acceptsProxyProtocol
+                  else
+                    elem s.loader [
+                      "paper"
+                      "folia"
+                    ];
                 statusConfig = pkgs.writeText "minecraft-web-status.json" (
                   builtins.toJSON {
                     servers = mapAttrsToList (name: s: {
                       inherit name;
-                      inherit (s) port loader;
+                      inherit (s) port loader packwizUrl;
                       address = addressOf name;
                       metricsPort = scrapePortOf s;
                       iconUrls = if isClientLoader s then iconUrlsOf s else [ ];
+                      proxyProtocol = routerCfg.enable && routerCfg.proxyProtocol && speaksProxyProtocol s;
                     }) enabledWebServers;
                   }
                 );
@@ -305,6 +359,7 @@
                       inherit pkgs lib;
                       servers = enabledWebServers;
                       domainSuffix = webDomainSuffix;
+                      dashboardUrl = webCfg.dashboardUrl;
                     };
                     enableACME = webCfg.enableACME;
                     forceSSL = webCfg.enableACME;
@@ -351,6 +406,81 @@
                   80
                   443
                 ];
+              }
+            ))
+            (mkIf metricsCfg.enable (
+              let
+                # Same rule as the status poller: implicit exporter port when
+                # exportPrometheus is on, else an explicit metricsPort.
+                scrapePortOf =
+                  s:
+                  if s.exportPrometheus then
+                    (if s.metricsPort != null then s.metricsPort else 19565)
+                  else
+                    s.metricsPort;
+                scrapedServers = filterAttrs (_: s: s.enable && scrapePortOf s != null) cfg;
+                datasourceUid = "mc-prom";
+                dashboard = import ./grafana-dashboard.nix { inherit datasourceUid; };
+                dashboardDir = pkgs.writeTextDir "minecraft.json" (builtins.toJSON dashboard);
+              in
+              {
+                services.prometheus = {
+                  enable = true;
+                  listenAddress = "127.0.0.1";
+                  port = metricsCfg.prometheusPort;
+                  globalConfig.scrape_interval = "15s";
+                  scrapeConfigs = [
+                    {
+                      job_name = "minecraft";
+                      static_configs = mapAttrsToList (name: s: {
+                        targets = [ "127.0.0.1:${toString (scrapePortOf s)}" ];
+                        labels.server = name;
+                      }) scrapedServers;
+                    }
+                  ];
+                };
+
+                # Loopback only: reachability (and therefore who can even see
+                # the dashboard link on the modpack site) is decided by
+                # whatever proxies this — e.g. `tailscale serve` + tailnet ACLs.
+                services.grafana = {
+                  enable = true;
+                  settings = {
+                    server = {
+                      http_addr = "127.0.0.1";
+                      http_port = metricsCfg.grafanaPort;
+                    }
+                    // optionalAttrs (metricsCfg.grafanaDomain != null) {
+                      domain = metricsCfg.grafanaDomain;
+                      root_url = "https://${metricsCfg.grafanaDomain}/";
+                    };
+                    # Anyone who can reach it may view; tailnet ACLs are the
+                    # access control. Editing still needs the admin login.
+                    "auth.anonymous" = {
+                      enabled = true;
+                      org_role = "Viewer";
+                    };
+                    analytics.reporting_enabled = false;
+                  };
+                  provision = {
+                    enable = true;
+                    datasources.settings.datasources = [
+                      {
+                        name = "Prometheus";
+                        type = "prometheus";
+                        uid = datasourceUid;
+                        url = "http://127.0.0.1:${toString metricsCfg.prometheusPort}";
+                        isDefault = true;
+                      }
+                    ];
+                    dashboards.settings.providers = [
+                      {
+                        name = "minecraft";
+                        options.path = dashboardDir;
+                      }
+                    ];
+                  };
+                };
               }
             ))
             (mkIf routerCfg.enable (
@@ -575,45 +705,23 @@
                       ${optionalString serverCfg.exportPrometheus (
                         if !promLoader then
                           ''
-                            echo "prometheus-exporter: exportPrometheus is set but loader '${serverCfg.loader}' is not forge/fabric/neoforge — skipping auto-install (use the paper/folia plugin ecosystem instead)." >&2
+                            echo "prometheus-exporter: exportPrometheus is set but no exporter distributed on a trusted platform exists for loader '${serverCfg.loader}' — TPS will be unavailable." >&2
                           ''
                         else
                           ''
-                            # --- Auto-install the Prometheus Exporter mod (${serverCfg.loader}) ---
-                            # Runs after packwiz sync; packwiz-installer only prunes files
-                            # it manages, so an unmanaged jar dropped here survives.
-                            mods_dir=${serverDir}/mods
-                            mkdir -p "$mods_dir"
-                            if ls "$mods_dir"/*[Pp]rometheus*[Ee]xporter*.jar >/dev/null 2>&1; then
-                              echo "prometheus-exporter: already present, leaving it in place (metricsPort must match its config)."
-                            else
-                              echo "prometheus-exporter: not found, fetching a build for ${serverCfg.minecraftVersion}/${serverCfg.loader}..."
-                              rel_json=$(curl -fsSL "https://api.github.com/repos/cpburnz/minecraft-prometheus-exporter/releases?per_page=100" || true)
-                              tag=$(printf '%s' "$rel_json" | ${pkgs.jq}/bin/jq -r '.[].tag_name' \
-                                | grep -E "^${serverCfg.minecraftVersion}-${serverCfg.loader}-" | sort -V | tail -1)
-                              if [ -n "$tag" ]; then
-                                url=$(printf '%s' "$rel_json" | ${pkgs.jq}/bin/jq -r --arg t "$tag" \
-                                  '.[] | select(.tag_name==$t) | .assets[] | select(.name|endswith(".jar")) | .browser_download_url' | head -1)
-                                if [ -n "$url" ]; then
-                                  echo "prometheus-exporter: downloading $tag ($url)"
-                                  if curl -fsSL "$url" -o "$mods_dir/Prometheus-Exporter-managed.jar"; then
-                                    echo "prometheus-exporter: installed."
-                                  else
-                                    echo "prometheus-exporter: download FAILED — TPS will be unavailable." >&2
-                                    rm -f "$mods_dir/Prometheus-Exporter-managed.jar"
-                                  fi
-                                else
-                                  echo "prometheus-exporter: no .jar asset on release $tag." >&2
-                                fi
-                              else
-                                echo "prometheus-exporter: no release matching ${serverCfg.minecraftVersion}-${serverCfg.loader}-* — TPS will be unavailable." >&2
-                              fi
-                              # Bind the exporter to loopback on our port so only the
-                              # local status poller can scrape it (never exposed).
-                              mkdir -p "$(dirname ${exporterCfgPath})"
-                              cp -f ${exporterCfg} ${exporterCfgPath}
-                              chmod u+w ${exporterCfgPath}
+                            # --- Prometheus Exporter mod config (${serverCfg.loader}) ---
+                            # The mod jar itself must come from the modpack, i.e. a
+                            # trusted platform (`packwiz curseforge add
+                            # prometheus-exporter`, side=server) — jars are never
+                            # downloaded ad hoc here. This block only manages its
+                            # config: bind to loopback on our port so just the local
+                            # status poller / Prometheus can scrape it.
+                            if ! ls ${serverDir}/mods/*[Pp]rometheus*[Ee]xporter*.jar >/dev/null 2>&1; then
+                              echo "prometheus-exporter: not present in mods/ — add it to the modpack from CurseForge (packwiz curseforge add prometheus-exporter, side=server). TPS will be unavailable until then." >&2
                             fi
+                            mkdir -p "$(dirname ${exporterCfgPath})"
+                            cp -f ${exporterCfg} ${exporterCfgPath}
+                            chmod u+w ${exporterCfgPath}
                           ''
                       )}
 

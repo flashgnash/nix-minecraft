@@ -129,9 +129,13 @@ def _strip_codes(s):
     return "".join(out).strip()
 
 
-def ping(host, port, timeout=2.0):
+def ping(host, port, timeout=2.0, proxy_protocol=False):
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
+        if proxy_protocol:
+            # Backends behind the router with proxyProtocol on (paper/folia)
+            # require a PROXY header on every connection, pings included.
+            sock.sendall(b"PROXY TCP4 127.0.0.1 127.0.0.1 49152 %d\r\n" % port)
         handshake = (
             b"\x00"
             + _write_varint(47)
@@ -231,6 +235,62 @@ def ensure_icon(name, urls):
     return None
 
 
+# ---- packwiz metadata (name, description, mod list) --------------------------
+#
+# pack.toml gives name/version/description; the index.toml it points at lists
+# every file, and mods show up as mods/<slug>.pw.toml metafiles. Fetching each
+# metafile would be hundreds of requests, so the mod list is the prettified
+# slugs. Cached in memory and refreshed hourly.
+
+PACK_META_TTL = 3600
+_pack_meta_cache = {}
+
+
+def _fetch_text(url, timeout=5.0):
+    req = urllib.request.Request(url, headers={"User-Agent": "minecraft-web"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def pack_meta(packwiz_url):
+    if not packwiz_url:
+        return None
+    cached = _pack_meta_cache.get(packwiz_url)
+    if cached and time.time() - cached["t"] < PACK_META_TTL:
+        return cached["data"]
+
+    data = None
+    try:
+        import tomllib
+
+        pack = tomllib.loads(_fetch_text(packwiz_url))
+        base = packwiz_url.rsplit("/", 1)[0]
+        mods = []
+        try:
+            index_file = (pack.get("index") or {}).get("file", "index.toml")
+            index = tomllib.loads(_fetch_text(base + "/" + index_file))
+            for f in index.get("files") or []:
+                path = f.get("file", "")
+                if path.startswith("mods/") and path.endswith(".pw.toml"):
+                    slug = path[len("mods/") : -len(".pw.toml")]
+                    mods.append(slug.replace("-", " ").replace("_", " ").title())
+        except Exception:
+            pass
+        data = {
+            "name": pack.get("name"),
+            "version": pack.get("version"),
+            "description": pack.get("description"),
+            "mod_count": len(mods) if mods else None,
+            "mods": sorted(mods),
+        }
+    except Exception:
+        # keep serving a stale copy if the refresh fails
+        if cached:
+            return cached["data"]
+    _pack_meta_cache[packwiz_url] = {"t": time.time(), "data": data}
+    return data
+
+
 # ---- main loop ---------------------------------------------------------------
 
 def poll_once(servers):
@@ -254,10 +314,11 @@ def poll_once(servers):
             "tps": None,
             "icon": existing_icon(name),
             "favicon": None,
+            "pack": pack_meta(s.get("packwizUrl")),
         }
 
         try:
-            p = ping("127.0.0.1", s["port"])
+            p = ping("127.0.0.1", s["port"], proxy_protocol=bool(s.get("proxyProtocol")))
             entry.update(
                 online=True,
                 motd=p["motd"] or None,
