@@ -50,7 +50,7 @@ let
     mrpack = {
       label = ".mrpack";
       file = ".mrpack";
-      desc = "Modrinth format — opens in the Modrinth App, or drag it onto Prism";
+      desc = "Modrinth format — opens in the Modrinth App";
     };
     curseforge = {
       label = "CurseForge";
@@ -78,7 +78,7 @@ let
       key = "mrpack";
       label = "Modrinth";
       primary = "mrpack";
-      heroTitle = "Open with the Modrinth App — or drag this card onto Prism";
+      heroTitle = "Open with the Modrinth App";
       heroBtn = "Download .mrpack";
       heroHint = "Once downloaded, open the file — the Modrinth App imports it.";
     }
@@ -395,10 +395,10 @@ let
       <div class="lv lv-mrpack">
         <ol>
           <li>Install the <a href="https://modrinth.com/app">Modrinth App</a>.</li>
-          <li>Click <b>Download .mrpack</b> and open the downloaded file — the Modrinth App imports it (dragging it onto Prism works too).</li>
+          <li>Click <b>Download .mrpack</b> and open the downloaded file — the Modrinth App imports it.</li>
           <li>Launch from the app.</li>
         </ol>
-        <p>The <code>.mrpack</code> doesn't self-update — check back here after pack updates. Prefer auto-updates? Use the Prism tab.</p>
+        <p>The <code>.mrpack</code> doesn't self-update — check back here after pack updates.</p>
       </div>
       <div class="lv lv-curseforge">
         <ol>
@@ -406,7 +406,7 @@ let
           <li>Click <b>Download for CurseForge</b>, then in the app: <b>Create Custom Profile → Import</b> and pick the downloaded zip.</li>
           <li>Launch from the app.</li>
         </ol>
-        <p>The CurseForge zip doesn't self-update — check back here after pack updates. Prefer auto-updates? Use the Prism tab.</p>
+        <p>The CurseForge zip doesn't self-update — check back here after pack updates.</p>
       </div>
       <p>Copy the server address under a pack's title to join.</p>
     </details>
