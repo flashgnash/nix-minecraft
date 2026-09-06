@@ -13,11 +13,16 @@
 #
 # Stdlib only (socket, urllib, json) so it needs no Python packages.
 
+import base64
+import html
 import json
 import os
 import re
+import shutil
 import socket
+import ssl
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -31,11 +36,18 @@ OUT_PATH = os.path.join(STATE_DIR, "status.json")
 ICON_DIR = os.path.join(STATE_DIR, "icons")
 TPS_STATE_PATH = os.path.join(STATE_DIR, ".tps-state.json")
 LAG_REPORT_PATH = os.path.join(STATE_DIR, "lag-reports.jsonl")
+REPORTS_DIR = os.path.join(STATE_DIR, "spark-reports")
 
 # Lag auto-profiler: sustained low TPS triggers a spark profile over RCON.
 LAG_TPS = float(os.environ.get("LAG_TPS_THRESHOLD", "15"))
 LAG_COOLDOWN = float(os.environ.get("LAG_COOLDOWN_SECONDS", "1800"))
 LAG_PROFILE_SECS = float(os.environ.get("LAG_PROFILE_SECONDS", "60"))
+SPARK_PARSER = os.environ.get("SPARK_PARSER")  # spark-report.py store path
+
+# Filled from the config file in main(): grafana annotation credentials and
+# the external base URL the report files are served under (tailnet-only).
+GRAFANA_CONF = None
+REPORTS_BASE_URL = None
 
 
 def load_json(path, default):
@@ -277,25 +289,129 @@ def rcon_command(port, password, command, timeout=5.0):
         return resp
 
 
+def parse_top_mods(path):
+    if not SPARK_PARSER:
+        return None
+    try:
+        out = subprocess.run(
+            [sys.executable, SPARK_PARSER, "--json", path],
+            capture_output=True, timeout=120, check=True,
+        )
+        return json.loads(out.stdout).get("mods")
+    except Exception as e:
+        print("lag-profiler: mod extraction failed: %s" % e, file=sys.stderr)
+        return None
+
+
+def regenerate_report_index():
+    entries = []
+    try:
+        with open(LAG_REPORT_PATH) as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if e.get("file"):
+                    entries.append(e)
+    except FileNotFoundError:
+        pass
+    entries.reverse()
+    rows = []
+    for e in entries:
+        mods = ", ".join(
+            "%s %.1fms" % (m["name"], m["ms_per_tick"]) for m in (e.get("top_mods") or [])[:5]
+        )
+        rows.append(
+            "<tr><td>%s</td><td>%s</td><td>%.1f</td><td>%s</td>"
+            '<td><a href="/%s">download</a></td></tr>'
+            % (html.escape(e["timestamp"]), html.escape(e["server"]), e.get("tps") or 0,
+               html.escape(mods), html.escape(e["file"]))
+        )
+    page = (
+        "<!doctype html><html><head><meta charset=utf-8><title>Lag reports</title><style>"
+        "body{font-family:ui-monospace,monospace;background:#192227;color:#fff;padding:2rem}"
+        "table{border-collapse:collapse;width:100%}td,th{border:1px solid #3a4a52;"
+        "padding:.4rem .7rem;text-align:left;font-size:.9rem}th{color:#9dff00}"
+        "a{color:#9dff00}p{color:rgba(255,255,255,.55)}"
+        "</style></head><body><h1>Lag reports</h1>"
+        "<p>Captured automatically when TPS dips below %s. Open a .sparkprofile in the "
+        '<a href="https://spark.lucko.me">spark viewer</a> for the full flame graph; '
+        "top mods by ms/tick are extracted below.</p>"
+        "<table><tr><th>when</th><th>server</th><th>tps</th><th>top mods (ms/tick)</th><th>profile</th></tr>%s</table>"
+        "</body></html>" % (LAG_TPS, "".join(rows))
+    )
+    with open(os.path.join(REPORTS_DIR, "index.html"), "w") as f:
+        f.write(page)
+
+
+def post_grafana_annotation(entry, at_ms):
+    if not GRAFANA_CONF:
+        return
+    try:
+        with open(GRAFANA_CONF["passwordFile"]) as f:
+            password = f.read().strip()
+        text = "Lag spike on %s (TPS %.1f)" % (entry["server"], entry.get("tps") or 0)
+        if entry.get("top_mods"):
+            text += " — top: " + ", ".join(
+                "%s %.1fms" % (m["name"], m["ms_per_tick"]) for m in entry["top_mods"][:3]
+            )
+        if REPORTS_BASE_URL and entry.get("file"):
+            text += ' <a href="%s/%s">profile</a> (<a href="%s/">all reports</a>)' % (
+                REPORTS_BASE_URL, entry["file"], REPORTS_BASE_URL)
+        body = json.dumps({
+            "time": at_ms,
+            "tags": ["lag-report", "server:" + entry["server"]],
+            "text": text,
+        }).encode()
+        req = urllib.request.Request(
+            GRAFANA_CONF["url"] + "/api/annotations",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Basic "
+                + base64.b64encode(b"admin:" + password.encode()).decode(),
+            },
+        )
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE  # loopback; cert is for the tailnet name
+        urllib.request.urlopen(req, timeout=10, context=ctx).read()
+    except Exception as e:
+        print("lag-profiler: annotation failed: %s" % e, file=sys.stderr)
+
+
 def _run_lag_profile(name, rcon_port, password_file, tps):
     try:
         with open(password_file) as f:
             password = f.read().strip()
         rcon_command(rcon_port, password, "spark profiler start")
         time.sleep(LAG_PROFILE_SECS)
-        resp = rcon_command(rcon_port, password, "spark profiler stop", timeout=30.0)
-        m = re.search(r"https://spark\.lucko\.me/\S+", _strip_codes(resp))
+        started_ms = int((time.time() - LAG_PROFILE_SECS) * 1000)
+        resp = _strip_codes(
+            rcon_command(rcon_port, password, "spark profiler stop --save-to-file", timeout=30.0)
+        )
         entry = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "server": name,
             "tps": tps,
-            "url": m.group(0) if m else None,
         }
-        if not m:
-            entry["response"] = _strip_codes(resp)[:400]
+        m = re.search(r"(/\S+\.sparkprofile)", resp)
+        if m:
+            os.makedirs(REPORTS_DIR, exist_ok=True)
+            fname = "%s-%s.sparkprofile" % (time.strftime("%Y%m%d-%H%M%S"), name)
+            shutil.move(m.group(1), os.path.join(REPORTS_DIR, fname))
+            os.chmod(os.path.join(REPORTS_DIR, fname), 0o644)
+            entry["file"] = fname
+            entry["top_mods"] = parse_top_mods(os.path.join(REPORTS_DIR, fname))
+            regenerate_report_index()
+        else:
+            entry["response"] = resp[:400]
         with open(LAG_REPORT_PATH, "a") as f:
             f.write(json.dumps(entry) + "\n")
-        print("lag-profiler: %s tps=%.1f -> %s" % (name, tps, entry["url"]), file=sys.stderr)
+        post_grafana_annotation(entry, started_ms)
+        print("lag-profiler: %s tps=%.1f -> %s" % (name, tps, entry.get("file") or "no file"),
+              file=sys.stderr)
     except Exception as e:
         print("lag-profiler: %s failed: %s" % (name, e), file=sys.stderr)
     finally:
@@ -450,8 +566,11 @@ def poll_once(servers):
 
 
 def main():
+    global GRAFANA_CONF, REPORTS_BASE_URL
     cfg = load_json(CONFIG_PATH, {"servers": []})
     servers = cfg.get("servers", [])
+    GRAFANA_CONF = cfg.get("grafana")
+    REPORTS_BASE_URL = cfg.get("reportsBaseUrl")
     os.makedirs(STATE_DIR, exist_ok=True)
     os.makedirs(ICON_DIR, exist_ok=True)
     while True:

@@ -87,7 +87,22 @@ in
     to = "now";
   };
   timezone = "browser";
-  annotations.list = [ ];
+  # Lag-report annotations posted by the status poller: markers on every
+  # panel, each linking to the captured spark profile.
+  annotations.list = [
+    {
+      name = "Lag reports";
+      enable = true;
+      hide = false;
+      iconColor = "red";
+      datasource = {
+        type = "grafana";
+        uid = "-- Grafana --";
+      };
+      type = "tags";
+      tags = [ "lag-report" ];
+    }
+  ];
   templating.list = [
     {
       name = "server";
@@ -270,6 +285,29 @@ in
     }
     # GC on the left, in line with the other time-correlated sparklines
     # (TPS, dropped items); heap on the right — less about the timeline.
+    # Time-range-filtered list of the auto-captured spark reports: only
+    # annotations inside the visible window show, so narrowing onto a lag
+    # spike surfaces exactly the relevant profiles.
+    {
+      type = "annolist";
+      title = "Lag reports (in time range)";
+      gridPos = {
+        x = 12;
+        y = 24;
+        w = 12;
+        h = 8;
+      };
+      options = {
+        onlyInTimeRange = true;
+        onlyFromThisDashboard = false;
+        tags = [ "lag-report" ];
+        limit = 20;
+        showTags = true;
+        showTime = true;
+        showUser = false;
+        navigateToPanel = false;
+      };
+    }
     (ts "GC time share"
       {
         x = 0;

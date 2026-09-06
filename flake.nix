@@ -88,6 +88,16 @@
               default = true;
               description = "Get a certificate and force HTTPS for the site.";
             };
+            sparkReportsPort = mkOption {
+              type = types.port;
+              default = 3002;
+              description = ''
+                Port the captured .sparkprofile files + index are served on
+                (only when some server sets sparkOnLag). Reuses the metrics
+                module's TLS cert and exposeInterfaces, i.e. tailnet-only in
+                the standard setup.
+              '';
+            };
             dashboardUrl = mkOption {
               type = types.nullOr types.str;
               default = null;
@@ -408,8 +418,9 @@
                       "folia"
                     ];
                 statusConfig = pkgs.writeText "minecraft-web-status.json" (
-                  builtins.toJSON {
-                    servers = mapAttrsToList (
+                  builtins.toJSON (
+                    {
+                      servers = mapAttrsToList (
                       name: s:
                       {
                         inherit name;
@@ -423,10 +434,29 @@
                         rconPort = s.port + rconPortOffset;
                         rconPasswordFile = "/var/lib/minecraft-rcon/${name}";
                       }
-                    ) enabledWebServers;
-                  }
+                      ) enabledWebServers;
+                    }
+                    // statusExtra
+                  )
                 );
                 anySparkOnLag = any (s: s.sparkOnLag) (attrValues enabledWebServers);
+                metricsTls = metricsCfg.enable && metricsCfg.tlsCertFile != null && metricsCfg.tlsKeyFile != null;
+                reportsBaseUrl =
+                  if metricsCfg.enable && metricsCfg.grafanaDomain != null then
+                    "http${optionalString metricsTls "s"}://${metricsCfg.grafanaDomain}:${toString webCfg.sparkReportsPort}"
+                  else
+                    null;
+                statusExtra = {
+                  reportsBaseUrl = reportsBaseUrl;
+                }
+                // optionalAttrs metricsCfg.enable {
+                  # Lag-report annotations, posted with the host-generated
+                  # admin password (made group-readable in the metrics module).
+                  grafana = {
+                    url = "http${optionalString metricsTls "s"}://127.0.0.1:${toString metricsCfg.grafanaPort}";
+                    passwordFile = "/var/lib/grafana/admin_password";
+                  };
+                };
               in
               {
                 services.nginx = {
@@ -461,6 +491,7 @@
                   description = "Poll Minecraft servers for the modpack listing site";
                   wantedBy = [ "multi-user.target" ];
                   after = [ "network.target" ];
+                  environment.SPARK_PARSER = "${./spark-report.py}";
                   serviceConfig = {
                     # NOT DynamicUser: that hides the state dir under
                     # /var/lib/private (0700), which nginx can't traverse ->
@@ -476,8 +507,46 @@
                 users.users.minecraft-web = {
                   isSystemUser = true;
                   group = "minecraft-web";
+                  # minecraft-admin so the poller can move saved .sparkprofile
+                  # files out of the server directories (2770 dirs).
+                  extraGroups = optionals (cfg != { }) [ "minecraft-admin" ];
                 };
                 users.groups.minecraft-web = { };
+
+                # Captured spark profiles, served like the dashboard: TLS from
+                # the tailscale host cert, port admitted only on the metrics
+                # module's exposeInterfaces (tailnet-only in the standard setup).
+                services.nginx.virtualHosts."minecraft-spark-reports" = mkIf anySparkOnLag (
+                  {
+                    serverName =
+                      if metricsCfg.enable && metricsCfg.grafanaDomain != null then
+                        metricsCfg.grafanaDomain
+                      else
+                        "_";
+                    listen = [
+                      {
+                        addr = "0.0.0.0";
+                        port = webCfg.sparkReportsPort;
+                        ssl = metricsTls;
+                      }
+                    ];
+                    root = "/var/lib/minecraft-web/spark-reports";
+                    locations."/".extraConfig = "autoindex on;";
+                  }
+                  // optionalAttrs metricsTls {
+                    onlySSL = true;
+                    sslCertificate = metricsCfg.tlsCertFile;
+                    sslCertificateKey = metricsCfg.tlsKeyFile;
+                  }
+                );
+                systemd.tmpfiles.rules = mkIf anySparkOnLag [
+                  "d /var/lib/minecraft-web/spark-reports 0755 minecraft-web minecraft-web -"
+                ];
+                networking.firewall.interfaces = mkIf (anySparkOnLag && metricsCfg.enable) (
+                  genAttrs metricsCfg.exposeInterfaces (_: {
+                    allowedTCPPorts = [ webCfg.sparkReportsPort ];
+                  })
+                );
 
                 # Lag-spike spark reports collected by the poller.
                 environment.systemPackages = mkIf anySparkOnLag [
@@ -615,7 +684,13 @@
                       printf '%s' "$(head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | cut -c1-32)" > "/var/lib/grafana/$f"
                     fi
                   done
+                  ${optionalString webCfg.enable ''
+                    # The status poller posts lag-report annotations with this.
+                    chgrp minecraft-web /var/lib/grafana/admin_password
+                    chmod 640 /var/lib/grafana/admin_password
+                  ''}
                 '';
+                users.users.grafana.extraGroups = optionals webCfg.enable [ "minecraft-web" ];
               }
             ))
             (mkIf routerCfg.enable (
