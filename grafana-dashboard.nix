@@ -180,7 +180,9 @@ in
       "percent"
       [ (q "A" ''100 * sum by (name) (rate(mc_dimension_tick_seconds_sum{${sel}}[5m]))'' "{{name}}") ]
     )
-    (pie "Chunks loaded by dimension"
+    # Timeseries on purpose: a step here lined up with a TPS dip says the
+    # lag spike was a dimension change loading chunks.
+    (ts "Chunks loaded by dimension"
       {
         x = 16;
         y = 16;
@@ -189,6 +191,7 @@ in
       }
       "none"
       [ (q "A" ''sum by (name) (mc_dimension_chunks_loaded{${sel}})'' "{{name}}") ]
+      { }
     )
     # Beneath TPS so item-count spikes line up with TPS dips.
     (ts "Dropped items on the ground"
