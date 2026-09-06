@@ -148,7 +148,14 @@ let
 
       addressBit =
         if address != null then
-          ''<code class="copy addr" onclick="selectText(this)" title="click to select, then copy">${address}</code>''
+          ''
+            <span class="addr-row">
+              <code class="copy addr" onclick="selectText(this)" title="click to select, then copy">${address}</code>
+              <button class="copy-btn" onclick="copyAddr(this)" title="copy address" aria-label="copy address">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="9" y="9" width="11" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+              </button>
+            </span>
+          ''
         else
           ''<span class="addr muted">server address not configured</span>'';
 
@@ -164,6 +171,7 @@ let
         else
           ''
             <div class="pack-section">
+              <h3 class="pack-section-title">Modpack</h3>
               ${tabStrip}
               ${concatMapStringsSep "\n" heroBlock launchers}
             </div>
@@ -188,7 +196,7 @@ let
               <span class="status-dot" title="server status"></span>
             </div>
             <div class="stats" data-status="${name}">
-              <span class="stat"><b data-k="players">—</b> online</span>
+              <span class="stat players-stat"><b data-k="players">—</b> online</span>
               <span class="stat">TPS <b class="tps-val" data-k="tps">—</b></span>
             </div>
           </div>
@@ -230,10 +238,11 @@ let
         padding: 2rem 1rem 4rem;
         line-height: 1.5;
       }
-      /* Wide screens: cards flow into two columns */
+      /* Wide screens: cards flow into two columns; cards in the same row
+         stretch to equal height */
       .cards {
         display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
-        gap: 1rem; align-items: start; margin: 1rem 0;
+        gap: 1rem; margin: 1rem 0;
       }
       @media (max-width: 560px) { .cards { grid-template-columns: 1fr; } }
       header h1 { font-weight: 700; margin: 0; font-size: 1.9rem; }
@@ -276,14 +285,24 @@ let
       .card.online .status-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
       .card.offline .status-dot { background: var(--critical); box-shadow: none; }
 
-      /* Subtle join address under the title */
+      /* Subtle join address under the title (never wraps; copy button beside) */
+      .addr-row { display: flex; align-items: center; gap: .35rem; margin-top: .15rem; min-width: 0; }
       .addr {
-        display: inline-block; margin-top: .15rem; font-size: .78rem; color: var(--dim);
+        display: inline-block; font-size: .78rem; color: var(--dim);
         background: var(--inset); padding: .15rem .5rem; border-radius: 6px; cursor: pointer;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
       }
       code.addr:hover { background: #0d1418; color: #c8d0dc; }
       code.addr::selection { background: var(--accent); color: #12180b; }
-      .addr.muted { cursor: default; background: none; padding-left: 0; }
+      .addr.muted { cursor: default; background: none; padding-left: 0; margin-top: .15rem; }
+      .copy-btn {
+        flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+        width: 22px; height: 22px; padding: 3px; background: none; border: 0;
+        border-radius: 5px; color: var(--dim); cursor: pointer;
+      }
+      .copy-btn:hover { background: var(--hover); color: var(--text); }
+      .copy-btn.copied { color: var(--accent); }
+      .copy-btn svg { width: 100%; height: 100%; }
 
       /* Live stats — right column under the chips */
       .stats {
@@ -304,7 +323,9 @@ let
       body[data-launcher="curseforge"] .lv-curseforge { display: block; }
 
       /* Modpack section: tab strip + one draggable pack panel per launcher */
-      .pack-section { margin-top: .9rem; padding-top: .9rem; border-top: 1px solid var(--border); }
+      .pack-section { margin-top: .9rem; padding-top: .7rem; border-top: 1px solid var(--border); }
+      .pack-section-title { margin: 0 0 .5rem; font-size: .95rem; font-weight: 700; }
+      .players-stat.has-players { cursor: help; text-decoration: underline dotted var(--dim); text-underline-offset: 3px; }
       .pack-panel {
         background: var(--inset); border: 1px dashed var(--border); border-radius: 10px;
         padding: .9rem 1rem; cursor: grab;
@@ -422,6 +443,24 @@ let
         sel.addRange(range);
       }
 
+      // Explicit copy button: a user-initiated clipboard write on a real
+      // button is fine (the ad-blocker ClickFix heuristics target sneaky
+      // copy-on-click of page text, which stays select-only above).
+      function copyAddr(btn) {
+        var code = btn.parentElement.querySelector("code.addr");
+        var text = code.textContent;
+        function flash() {
+          btn.classList.add("copied");
+          setTimeout(function () { btn.classList.remove("copied"); }, 1200);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(flash, function () { selectText(code); });
+        } else {
+          selectText(code);
+          try { document.execCommand("copy") && flash(); } catch (e) {}
+        }
+      }
+
       // Chromium: dragging the pack panel out of the window drops a real file
       // (e.g. straight onto the Prism window). Other browsers get the URL.
       function dragPack(e) {
@@ -474,6 +513,13 @@ let
             if (pl) {
               pl.textContent = (s.players_online == null ? "—" : s.players_online) +
                 (s.players_max != null ? " / " + s.players_max : "");
+              var stat = pl.closest(".players-stat");
+              if (stat) {
+                var names = s.player_names || [];
+                stat.classList.toggle("has-players", names.length > 0);
+                stat.title = names.length ? names.join("\n") :
+                  (s.players_online > 0 ? "player list unavailable" : "");
+              }
             }
             var tps = box.querySelector("[data-k=tps]");
             if (tps) {

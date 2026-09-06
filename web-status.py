@@ -159,6 +159,12 @@ def ping(host, port, timeout=2.0):
         "motd": _strip_codes(_flatten_motd(data.get("description"))),
         "players_online": players.get("online"),
         "players_max": players.get("max"),
+        # SLP "sample": up to 12 online player names (server picks which)
+        "player_names": [
+            _strip_codes(p["name"])
+            for p in (players.get("sample") or [])
+            if isinstance(p, dict) and isinstance(p.get("name"), str)
+        ],
         "version": (data.get("version", {}) or {}).get("name"),
         "favicon": favicon,
     }
@@ -243,6 +249,7 @@ def poll_once(servers):
             "motd": None,
             "players_online": None,
             "players_max": None,
+            "player_names": [],
             "version": None,
             "tps": None,
             "icon": existing_icon(name),
@@ -256,6 +263,7 @@ def poll_once(servers):
                 motd=p["motd"] or None,
                 players_online=p["players_online"],
                 players_max=p["players_max"],
+                player_names=p["player_names"],
                 version=p["version"],
                 favicon=p["favicon"],
             )
