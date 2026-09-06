@@ -50,6 +50,31 @@ let
     inherit refId expr legendFormat;
     datasource = ds;
   };
+
+  # Pie of the current (last) value per series — for "share of X" panels.
+  pie = title: gridPos: unit: targets: {
+    type = "piechart";
+    inherit title gridPos targets;
+    datasource = ds;
+    fieldConfig = {
+      defaults = {
+        inherit unit;
+      };
+      overrides = [ ];
+    };
+    options = {
+      reduceOptions = {
+        values = false;
+        calcs = [ "lastNotNull" ];
+        fields = "";
+      };
+      legend = {
+        displayMode = "list";
+        placement = "right";
+      };
+      tooltip.mode = "single";
+    };
+  };
 in
 {
   title = "Minecraft";
@@ -130,86 +155,69 @@ in
         };
       }
     )
-    (ts "Tick time by dimension (lag source)"
+    (pie "Tick time by dimension (lag source)"
       {
         x = 0;
-        y = 8;
-        w = 12;
+        y = 16;
+        w = 8;
         h = 8;
       }
       "ms"
       [
         (q "A"
-          ''1000 * sum by (server, name) (rate(mc_dimension_tick_seconds_sum{${sel}}[5m])) / sum by (server, name) (rate(mc_dimension_tick_seconds_count{${sel}}[5m]))''
-          "{{server}} {{name}}"
+          ''1000 * sum by (name) (rate(mc_dimension_tick_seconds_sum{${sel}}[5m])) / sum by (name) (rate(mc_dimension_tick_seconds_count{${sel}}[5m]))''
+          "{{name}}"
         )
       ]
+    )
+    (pie "Tick budget spent per dimension"
+      {
+        x = 8;
+        y = 16;
+        w = 8;
+        h = 8;
+      }
+      "percent"
+      [ (q "A" ''100 * sum by (name) (rate(mc_dimension_tick_seconds_sum{${sel}}[5m]))'' "{{name}}") ]
+    )
+    (pie "Chunks loaded by dimension"
+      {
+        x = 16;
+        y = 16;
+        w = 8;
+        h = 8;
+      }
+      "none"
+      [ (q "A" ''sum by (name) (mc_dimension_chunks_loaded{${sel}})'' "{{name}}") ]
+    )
+    # Beneath TPS so item-count spikes line up with TPS dips.
+    (ts "Dropped items on the ground"
+      {
+        x = 0;
+        y = 8;
+        w = 12;
+        h = 8;
+      }
+      "none"
+      [ (q "A" ''sum by (dim) (mc_entities_total{type="Item", ${sel}})'' "{{dim}}") ]
       { }
     )
-    (ts "Tick budget spent per dimension"
+    (ts "Entities by type (top 15)"
       {
         x = 12;
         y = 8;
         w = 12;
         h = 8;
       }
-      "percent"
-      [
-        (q "A" ''100 * sum by (server, name) (rate(mc_dimension_tick_seconds_sum{${sel}}[5m]))''
-          "{{server}} {{name}}"
-        )
-      ]
-      { custom.stacking.mode = "normal"; }
-    )
-    (ts "Entities by type (top 15)"
-      {
-        x = 0;
-        y = 16;
-        w = 12;
-        h = 9;
-      }
       "none"
       [ (q "A" ''topk(15, sum by (type) (mc_entities_total{${sel}}))'' "{{type}}") ]
       { }
     )
-    (ts "Entities by dimension"
-      {
-        x = 12;
-        y = 16;
-        w = 6;
-        h = 9;
-      }
-      "none"
-      [ (q "A" ''sum by (server, dim) (mc_entities_total{${sel}})'' "{{server}} {{dim}}") ]
-      { }
-    )
-    (ts "Dropped items on the ground"
-      {
-        x = 18;
-        y = 16;
-        w = 6;
-        h = 9;
-      }
-      "none"
-      [ (q "A" ''sum by (server, dim) (mc_entities_total{type="Item", ${sel}})'' "{{server}} {{dim}}") ]
-      { }
-    )
-    (ts "Chunks loaded by dimension"
+    (ts "Players online"
       {
         x = 0;
         y = 25;
         w = 12;
-        h = 8;
-      }
-      "none"
-      [ (q "A" ''mc_dimension_chunks_loaded{${sel}}'' "{{server}} {{name}}") ]
-      { }
-    )
-    (ts "Players online"
-      {
-        x = 12;
-        y = 25;
-        w = 6;
         h = 8;
       }
       "none"
@@ -220,9 +228,9 @@ in
       type = "table";
       title = "Who is on";
       gridPos = {
-        x = 18;
+        x = 12;
         y = 25;
-        w = 6;
+        w = 12;
         h = 8;
       };
       datasource = ds;

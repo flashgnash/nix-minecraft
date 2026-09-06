@@ -192,6 +192,17 @@
               type = types.bool;
               default = true;
             };
+            recordLogins = mkOption {
+              type = types.bool;
+              default = false;
+              description = ''
+                Keep a persistent connection log: the router webhooks every
+                player connect/disconnect (name, UUID, client IP, requested
+                server) to a loopback collector that appends JSON lines to
+                /var/lib/minecraft-login-log/logins.jsonl. Readable by the
+                minecraft-admin group; summarise with `mc-logins`.
+              '';
+            };
           };
 
           options.services.minecraft-servers = mkOption {
@@ -572,6 +583,9 @@
                   optionalString (routerCfg.defaultServer != null)
                     " -default 127.0.0.1:${toString (backendPort cfg.${routerCfg.defaultServer})}";
                 proxyArg = optionalString routerCfg.proxyProtocol " -use-proxy-protocol";
+                loginLogPort = 25580;
+                loginLogFile = "/var/lib/minecraft-login-log/logins.jsonl";
+                loginArgs = optionalString routerCfg.recordLogins " -webhook-url http://127.0.0.1:${toString loginLogPort}/ -webhook-require-user";
               in
               {
                 assertions = [
@@ -589,7 +603,24 @@
                       DynamicUser = true;
                       Restart = "always";
                       RestartSec = "5s";
-                      ExecStart = "${mcRouter}/bin/mc-router -port ${toString routerCfg.port} -mapping ${escapeShellArg mappings}${proxyArg}${defaultArg}";
+                      ExecStart = "${mcRouter}/bin/mc-router -port ${toString routerCfg.port} -mapping ${escapeShellArg mappings}${proxyArg}${defaultArg}${loginArgs}";
+                    };
+                  };
+                }
+                // optionalAttrs routerCfg.recordLogins {
+                  minecraft-login-log = {
+                    description = "Persistent player connection log (mc-router webhook sink)";
+                    wantedBy = [ "multi-user.target" ];
+                    before = [ "mc-router.service" ];
+                    serviceConfig = {
+                      User = "minecraft";
+                      Group = "minecraft-admin";
+                      StateDirectory = "minecraft-login-log";
+                      StateDirectoryMode = "0750";
+                      UMask = "0027"; # logins.jsonl lands 640 minecraft:minecraft-admin
+                      Restart = "always";
+                      RestartSec = "5s";
+                      ExecStart = "${pkgs.python3}/bin/python3 ${./login-log.py} ${toString loginLogPort} ${loginLogFile}";
                     };
                   };
                 }
@@ -610,6 +641,36 @@
                   }
                 ) (filterAttrs (_: s: needsStripper s) enabledServers);
                 networking.firewall.allowedTCPPorts = mkIf routerCfg.openFirewall [ routerCfg.port ];
+
+                # Summarise who connected from where (unique player/IP pairs,
+                # counts, first/last seen). `mc-logins --raw` = full stream.
+                environment.systemPackages = mkIf routerCfg.recordLogins [
+                  (pkgs.writeShellApplication {
+                    name = "mc-logins";
+                    runtimeInputs = [
+                      pkgs.jq
+                      pkgs.util-linux
+                    ];
+                    text = ''
+                      file=${loginLogFile}
+                      if [ "''${1:-}" = "--raw" ]; then
+                        exec cat "$file"
+                      fi
+                      jq -rs '
+                        map(select(.event == "connected"))
+                        | group_by([.player, .ip])
+                        | map({player: .[0].player, ip: .[0].ip,
+                               connections: length,
+                               first: (map(.timestamp) | min | split(".")[0]),
+                               last: (map(.timestamp) | max | split(".")[0]),
+                               servers: (map(.server) | map(sub("\\..*$"; "")) | unique | join(","))})
+                        | sort_by(.last) | reverse
+                        | (["PLAYER","IP","N","FIRST","LAST","SERVERS"],
+                           (.[] | [.player, .ip, (.connections|tostring), .first, .last, .servers]))
+                        | @tsv' "$file" | column -t
+                    '';
+                  })
+                ];
               }
             ))
             (mkIf (cfg != { }) (
