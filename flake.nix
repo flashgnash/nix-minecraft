@@ -133,6 +133,21 @@
                 governed by tailscale ACLs. Empty = loopback only.
               '';
             };
+            tlsCertFile = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              example = "/etc/ssl/tailscale-certs/cert.pem";
+              description = ''
+                Serve Grafana over HTTPS with this certificate (e.g. the
+                tailscale-issued host cert). Both tlsCertFile and tlsKeyFile
+                must be set; the grafana user needs read access.
+              '';
+            };
+            tlsKeyFile = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              example = "/etc/ssl/tailscale-certs/key.pem";
+            };
           };
 
           options.services.minecraft-router = {
@@ -458,14 +473,24 @@
                 services.grafana = {
                   enable = true;
                   settings = {
-                    server = {
-                      http_addr = if metricsCfg.exposeInterfaces == [ ] then "127.0.0.1" else "0.0.0.0";
-                      http_port = metricsCfg.grafanaPort;
-                    }
-                    // optionalAttrs (metricsCfg.grafanaDomain != null) {
-                      domain = metricsCfg.grafanaDomain;
-                      root_url = "http://${metricsCfg.grafanaDomain}:${toString metricsCfg.grafanaPort}/";
-                    };
+                    server =
+                      let
+                        useTls = metricsCfg.tlsCertFile != null && metricsCfg.tlsKeyFile != null;
+                        scheme = if useTls then "https" else "http";
+                      in
+                      {
+                        http_addr = if metricsCfg.exposeInterfaces == [ ] then "127.0.0.1" else "0.0.0.0";
+                        http_port = metricsCfg.grafanaPort;
+                      }
+                      // optionalAttrs useTls {
+                        protocol = "https";
+                        cert_file = metricsCfg.tlsCertFile;
+                        cert_key = metricsCfg.tlsKeyFile;
+                      }
+                      // optionalAttrs (metricsCfg.grafanaDomain != null) {
+                        domain = metricsCfg.grafanaDomain;
+                        root_url = "${scheme}://${metricsCfg.grafanaDomain}:${toString metricsCfg.grafanaPort}/";
+                      };
                     # Anyone who can reach it may view; tailnet ACLs are the
                     # access control. Editing still needs the admin login.
                     "auth.anonymous" = {
