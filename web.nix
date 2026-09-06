@@ -435,7 +435,9 @@ let
          — the subtle variant differs only in colour. */
       .hero-btns { display: flex; align-items: stretch; flex-wrap: nowrap; gap: .5rem; min-width: 0; clear: both; padding-top: .65rem; }
       .hero-btns .btn {
-        flex: 1 1 0; min-width: 0; text-align: center;
+        /* basis auto: each button sizes to its label, then spare space is
+           shared — long labels never truncate while short ones hog room */
+        flex: 1 1 auto; min-width: 0; text-align: center;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         display: flex; align-items: center; justify-content: center;
         font-size: .95rem; padding: .55rem 1.1rem;
