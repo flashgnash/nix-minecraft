@@ -316,9 +316,10 @@
                         report URL — which names the chunks/entities burning
                         the tick — to /var/lib/minecraft-web/lag-reports.jsonl
                         (see `mc-lag-reports`). RCON is enabled on loopback
-                        with a host-generated password automatically. The
-                        spark mod itself must ship in the pack from a trusted
-                        platform (`packwiz mr add spark`, side=server).
+                        with a host-generated password automatically, and the
+                        spark mod is overlaid onto the pack from its official
+                        Modrinth listing (sha512-verified) on forge/fabric/
+                        neoforge; paper/folia bundle spark since 1.21.
                         Requires services.minecraft-web (the poller).
                       '';
                     };
@@ -911,6 +912,44 @@
                       else
                         echo 'server-port=${toString serverCfg.port}' >> ${serverDir}/server.properties
                       fi
+
+                      ${optionalString serverCfg.sparkOnLag (
+                        optionalString
+                          (elem serverCfg.loader [
+                            "forge"
+                            "fabric"
+                            "neoforge"
+                          ])
+                          ''
+                            # --- spark overlay (for the lag auto-profiler) ---
+                            # Installed on top of the pack like the Prometheus
+                            # Exporter config: fetched at most once, from spark's
+                            # official Modrinth listing (trusted platform), with
+                            # the API's sha512 verified. Paper/folia need nothing:
+                            # spark ships inside the server since 1.21.
+                            mods_dir=${serverDir}/mods
+                            mkdir -p "$mods_dir"
+                            if ls "$mods_dir"/spark-*.jar >/dev/null 2>&1; then
+                              echo "spark: already present, leaving it in place."
+                            else
+                              echo "spark: fetching the ${serverCfg.minecraftVersion}/${serverCfg.loader} build from Modrinth..."
+                              ver_json=$(curl -fsSL 'https://api.modrinth.com/v2/project/spark/version?loaders=%5B%22${serverCfg.loader}%22%5D&game_versions=%5B%22${serverCfg.minecraftVersion}%22%5D' || true)
+                              url=$(printf '%s' "$ver_json" | ${pkgs.jq}/bin/jq -r 'first(.[0].files[] | select(.primary)) | .url // empty')
+                              sha512=$(printf '%s' "$ver_json" | ${pkgs.jq}/bin/jq -r 'first(.[0].files[] | select(.primary)) | .hashes.sha512 // empty')
+                              if [ -n "$url" ] && [ -n "$sha512" ]; then
+                                if curl -fsSL "$url" -o "$mods_dir/spark-managed.jar" \
+                                  && echo "$sha512  $mods_dir/spark-managed.jar" | sha512sum -c --quiet -; then
+                                  echo "spark: installed from $url"
+                                else
+                                  echo "spark: download or checksum FAILED — lag auto-profiling will be unavailable." >&2
+                                  rm -f "$mods_dir/spark-managed.jar"
+                                fi
+                              else
+                                echo "spark: no Modrinth build for ${serverCfg.minecraftVersion}/${serverCfg.loader} — lag auto-profiling will be unavailable." >&2
+                              fi
+                            fi
+                          ''
+                      )}
 
                       ${optionalString serverCfg.sparkOnLag ''
                         # --- RCON for the lag auto-profiler ---
