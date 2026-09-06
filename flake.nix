@@ -966,15 +966,13 @@
                       ${optionalString serverCfg.sparkOnLag ''
                         # --- RCON for the lag auto-profiler ---
                         # Loopback only in practice: the firewall never opens the
-                        # rcon port. Password generated once on the host, readable
-                        # by the status poller (minecraft-web group).
-                        mkdir -p /var/lib/minecraft-rcon
-                        chmod 750 /var/lib/minecraft-rcon
-                        chgrp minecraft-web /var/lib/minecraft-rcon
+                        # rcon port. preStart runs as the minecraft user, so the
+                        # directory comes from tmpfiles (setgid minecraft-web:
+                        # the password file inherits the group the status poller
+                        # reads with; umask 037 makes it 640).
                         if [ ! -s /var/lib/minecraft-rcon/${name} ]; then
                           (umask 037; head -c 24 /dev/urandom | base64 | tr -d '/+=\n' > /var/lib/minecraft-rcon/${name})
                         fi
-                        chgrp minecraft-web /var/lib/minecraft-rcon/${name}
                         rcon_pw=$(cat /var/lib/minecraft-rcon/${name})
                         for kv in 'enable-rcon=true' 'rcon.port=${toString (serverCfg.port + rconPortOffset)}' "rcon.password=$rcon_pw" 'broadcast-rcon-to-ops=false'; do
                           key=''${kv%%=*}
@@ -1054,6 +1052,11 @@
                   (mapAttrsToList (name: serverCfg: "d /srv/minecraft/${name} 2770 minecraft minecraft-admin -") (
                     lib.filterAttrs (_: s: s.enable) cfg
                   ))
+                  ++ optionals (webCfg.enable && any (s: s.enable && s.sparkOnLag) (attrValues cfg)) [
+                    # setgid: rcon passwords created inside inherit minecraft-web
+                    # so the status poller can read them (files land 640).
+                    "d /var/lib/minecraft-rcon 2750 minecraft minecraft-web -"
+                  ]
                   ++ [
                     "d /srv/minecraft 2770 minecraft minecraft-admin -"
                     "d /srv/minecraft/global-config 2770 minecraft minecraft-admin -"
