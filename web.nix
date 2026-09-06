@@ -224,7 +224,7 @@ let
               <span class="stat players-stat"><b data-k="players">—</b> online</span>
               <span class="stat">TPS <b class="tps-val" data-k="tps">—</b>${
                 optionalString (dashboardUrl != null) ''
-                  <a class="dash-link" href="${dashboardUrl}/d/minecraft?var-server=${name}" target="_blank" rel="noopener" title="open the metrics dashboard" hidden><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g fill="currentColor"><rect x="4" y="11" width="3.4" height="8"/><rect x="10.3" y="5" width="3.4" height="14"/><rect x="16.6" y="13" width="3.4" height="6"/></g></svg></a>
+                  <a class="dash-link" href="${dashboardUrl}/d/minecraft?var-server=${name}" target="_blank" rel="noopener" title="metrics dashboard (tailnet access only)"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g fill="currentColor"><rect x="4" y="11" width="3.4" height="8"/><rect x="10.3" y="5" width="3.4" height="14"/><rect x="16.6" y="13" width="3.4" height="6"/></g></svg></a>
                 ''
               }</span>
             </div>
@@ -561,23 +561,10 @@ let
         }
       }
 
-      ${optionalString (dashboardUrl != null) ''
-        // Reveal the dashboard links only if this browser can actually reach
-        // Grafana (it's tailnet-only, so most visitors can't — they never see
-        // the link). no-cors: an opaque response still proves reachability.
-        (function () {
-          var links = document.querySelectorAll(".dash-link");
-          if (!links.length) return;
-          var ctl = window.AbortController ? new AbortController() : null;
-          if (ctl) setTimeout(function () { ctl.abort(); }, 4000);
-          fetch("${dashboardUrl}/api/health", { mode: "no-cors", cache: "no-store", signal: ctl && ctl.signal })
-            .then(function () {
-              for (var i = 0; i < links.length; i++) links[i].hidden = false;
-            })
-            .catch(function () {});
-        })();
-      ''}
-
+      // Note: the dashboard link shows for everyone. Reachability probing was
+      // tried and abandoned — browsers' Local Network Access policy silently
+      // blocks public sites from fetching tailnet (CGNAT) addresses, so a
+      // probe can't distinguish "no access" from "browser refused to ask".
       var LAUNCHERS = ["prism", "mrpack", "curseforge"];
       function setCookie(k, v) { document.cookie = k + "=" + v + ";path=/;max-age=31536000;samesite=lax"; }
       function getCookie(k) {
