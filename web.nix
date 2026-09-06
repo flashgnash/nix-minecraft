@@ -191,15 +191,15 @@ let
                     <span class="chip" data-k="pack-version" hidden></span>
                     <span class="chip" data-k="mod-count" hidden></span>
                   </div>
+                  <details class="mod-list" data-k="mod-list" hidden>
+                    <summary>Mod list</summary>
+                    <input class="mod-search" type="search" placeholder="filter mods…" oninput="filterMods(this)" />
+                    <ul class="mods" data-k="mods"></ul>
+                  </details>
                 </div>
               </div>
               ${tabStrip}
               ${concatMapStringsSep "\n" heroBlock launchers}
-              <details class="mod-list" data-k="mod-list" hidden>
-                <summary>Mod list</summary>
-                <input class="mod-search" type="search" placeholder="filter mods…" oninput="filterMods(this)" />
-                <ul class="mods" data-k="mods"></ul>
-              </details>
             </div>
           '';
     in
@@ -369,11 +369,12 @@ let
       .pack-meta { display: flex; gap: .4rem; margin-top: .3rem; flex-wrap: wrap; }
       .pack-meta .chip:empty { display: none; }
 
-      /* Searchable, collapsible mod list */
-      details.mod-list { margin-top: .8rem; color: var(--dim); font-size: .85rem; }
+      /* Searchable, collapsible mod list (lives in the pack description) */
+      details.mod-list { margin-top: .35rem; color: var(--dim); font-size: .82rem; }
       details.mod-list summary {
-        cursor: pointer; color: var(--text); font-weight: 700; list-style: none; padding: .2rem 0;
+        cursor: pointer; color: var(--dim); font-weight: 700; list-style: none; padding: .1rem 0;
       }
+      details.mod-list summary:hover { color: var(--text); }
       details.mod-list summary::-webkit-details-marker { display: none; }
       details.mod-list summary::before { content: "▸ "; color: var(--accent); }
       details.mod-list[open] summary::before { content: "▾ "; }
