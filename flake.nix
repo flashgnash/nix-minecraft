@@ -330,13 +330,22 @@
                   wantedBy = [ "multi-user.target" ];
                   after = [ "network.target" ];
                   serviceConfig = {
-                    DynamicUser = true;
+                    # NOT DynamicUser: that hides the state dir under
+                    # /var/lib/private (0700), which nginx can't traverse ->
+                    # 403 on /status.json and /icons/.
+                    User = "minecraft-web";
+                    Group = "minecraft-web";
                     StateDirectory = "minecraft-web";
                     Restart = "always";
                     RestartSec = "10s";
                     ExecStart = "${pkgs.python3}/bin/python3 ${./web-status.py} ${statusConfig}";
                   };
                 };
+                users.users.minecraft-web = {
+                  isSystemUser = true;
+                  group = "minecraft-web";
+                };
+                users.groups.minecraft-web = { };
 
                 networking.firewall.allowedTCPPorts = [
                   80

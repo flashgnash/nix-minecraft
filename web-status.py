@@ -44,6 +44,8 @@ def atomic_write_json(path, obj):
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(obj, f)
+        # mkstemp creates 0600; nginx (other user) must be able to read it
+        os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except Exception:
         try:
