@@ -212,6 +212,32 @@
                       default = 4;
                       description = "RAM allocated to the server in GB";
                     };
+                    exportPrometheus = mkOption {
+                      type = types.bool;
+                      default = false;
+                      description = ''
+                        Auto-install the cpburnz "Prometheus Exporter" mod
+                        (forge/fabric/neoforge only) into this server's mods
+                        directory if the pack doesn't already ship an exporter,
+                        matching the server's loader + Minecraft version, and
+                        configure it to listen on 127.0.0.1:<metricsPort>. The
+                        status site's poller scrapes that endpoint for TPS.
+                        Ignored (with a log warning) for paper/folia — that
+                        ecosystem uses a different plugin.
+                      '';
+                    };
+                    metricsPort = mkOption {
+                      type = types.nullOr types.port;
+                      default = null;
+                      description = ''
+                        Loopback port of a Prometheus /metrics endpoint for this
+                        server (e.g. the Prometheus Exporter mod). The status
+                        poller scrapes 127.0.0.1:<metricsPort> for TPS and player
+                        metrics. When exportPrometheus is true this also sets the
+                        auto-installed exporter's listen port (defaults to 19565
+                        if left null).
+                      '';
+                    };
                   };
                 }
               )
@@ -221,33 +247,116 @@
           };
 
           config = mkMerge [
-            (mkIf webCfg.enable {
-              services.nginx = {
-                enable = mkDefault true;
-                virtualHosts.${webCfg.hostName} = {
-                  root = import ./web.nix {
-                    inherit pkgs lib;
-                    servers = filterAttrs (_: s: s.enable) cfg;
-                    domainSuffix = if routerCfg.enable then routerCfg.domainSuffix else null;
+            (mkIf webCfg.enable (
+              let
+                enabledWebServers = filterAttrs (_: s: s.enable) cfg;
+                webDomainSuffix = if routerCfg.enable then routerCfg.domainSuffix else null;
+                webPublicPort = if routerCfg.enable then routerCfg.port else 25565;
+                addressOf =
+                  name:
+                  if webDomainSuffix == null then
+                    null
+                  else
+                    "${name}.${webDomainSuffix}"
+                    + (if webPublicPort == 25565 then "" else ":${toString webPublicPort}");
+                # Port the poller scrapes for TPS: the auto-installed exporter's
+                # port when exportPrometheus is on, else an explicit metricsPort.
+                scrapePortOf =
+                  s:
+                  if s.exportPrometheus then
+                    (if s.metricsPort != null then s.metricsPort else 19565)
+                  else
+                    s.metricsPort;
+                # Candidate pack-icon URLs: siblings of the packwiz pack.toml.
+                iconUrlsOf =
+                  s:
+                  let
+                    base = replaceStrings [ "pack.toml" ] [ "" ] s.packwizUrl;
+                  in
+                  map (f: base + f) [
+                    "icon.png"
+                    "pack.png"
+                    "logo.png"
+                  ];
+                isClientLoader =
+                  s:
+                  elem s.loader [
+                    "forge"
+                    "neoforge"
+                    "fabric"
+                  ];
+                statusConfig = pkgs.writeText "minecraft-web-status.json" (
+                  builtins.toJSON {
+                    servers = mapAttrsToList (name: s: {
+                      inherit name;
+                      inherit (s) port loader;
+                      address = addressOf name;
+                      metricsPort = scrapePortOf s;
+                      iconUrls = if isClientLoader s then iconUrlsOf s else [ ];
+                    }) enabledWebServers;
+                  }
+                );
+              in
+              {
+                services.nginx = {
+                  enable = mkDefault true;
+                  virtualHosts.${webCfg.hostName} = {
+                    root = import ./web.nix {
+                      inherit pkgs lib;
+                      servers = enabledWebServers;
+                      domainSuffix = webDomainSuffix;
+                    };
+                    enableACME = webCfg.enableACME;
+                    forceSSL = webCfg.enableACME;
+                    # Live status + pack icons live in the poller's state dir,
+                    # served alongside the static store index.html.
+                    locations."= /status.json" = {
+                      alias = "/var/lib/minecraft-web/status.json";
+                      extraConfig = ''
+                        add_header Cache-Control "no-store";
+                        default_type application/json;
+                      '';
+                    };
+                    locations."/icons/" = {
+                      alias = "/var/lib/minecraft-web/icons/";
+                    };
                   };
-                  enableACME = webCfg.enableACME;
-                  forceSSL = webCfg.enableACME;
                 };
-              };
-              networking.firewall.allowedTCPPorts = [
-                80
-                443
-              ];
-            })
+
+                # One poller for the whole host refreshes a single cached
+                # status.json; every visitor's browser just reads that file.
+                systemd.services.minecraft-web-status = {
+                  description = "Poll Minecraft servers for the modpack listing site";
+                  wantedBy = [ "multi-user.target" ];
+                  after = [ "network.target" ];
+                  serviceConfig = {
+                    DynamicUser = true;
+                    StateDirectory = "minecraft-web";
+                    Restart = "always";
+                    RestartSec = "10s";
+                    ExecStart = "${pkgs.python3}/bin/python3 ${./web-status.py} ${statusConfig}";
+                  };
+                };
+
+                networking.firewall.allowedTCPPorts = [
+                  80
+                  443
+                ];
+              }
+            ))
             (mkIf routerCfg.enable (
               let
                 mcRouter = import ./mc-router.nix { inherit pkgs; };
                 enabledServers = filterAttrs (_: s: s.enable) cfg;
-                speaksProxyProtocol = s:
+                speaksProxyProtocol =
+                  s:
                   if s.acceptsProxyProtocol != null then
                     s.acceptsProxyProtocol
                   else
-                    elem s.loader [ "paper" "folia" ];
+                    elem s.loader [
+                      "paper"
+                      "folia"
+                    ];
                 needsStripper = s: routerCfg.proxyProtocol && !(speaksProxyProtocol s);
                 stripPortOffset = 10000;
                 # The router must target the stripper (not the server) for
@@ -258,8 +367,9 @@
                     name: s: "${name}.${routerCfg.domainSuffix}=127.0.0.1:${toString (backendPort s)}"
                   ) enabledServers
                 );
-                defaultArg = optionalString (routerCfg.defaultServer != null)
-                  " -default 127.0.0.1:${toString (backendPort cfg.${routerCfg.defaultServer})}";
+                defaultArg =
+                  optionalString (routerCfg.defaultServer != null)
+                    " -default 127.0.0.1:${toString (backendPort cfg.${routerCfg.defaultServer})}";
                 proxyArg = optionalString routerCfg.proxyProtocol " -use-proxy-protocol";
               in
               {
@@ -281,7 +391,9 @@
                       ExecStart = "${mcRouter}/bin/mc-router -port ${toString routerCfg.port} -mapping ${escapeShellArg mappings}${proxyArg}${defaultArg}";
                     };
                   };
-                } // mapAttrs' (name: s:
+                }
+                // mapAttrs' (
+                  name: s:
                   nameValuePair "mc-router-strip-${name}" {
                     description = "PROXY protocol stripper for Minecraft server ${name}";
                     wantedBy = [ "multi-user.target" ];
@@ -290,7 +402,9 @@
                       DynamicUser = true;
                       Restart = "always";
                       RestartSec = "5s";
-                      ExecStart = "${mcRouter}/bin/mc-router -port ${toString (s.port + stripPortOffset)} -receive-proxy-protocol -trusted-proxies 127.0.0.1/32 -default 127.0.0.1:${toString s.port}";
+                      ExecStart = "${mcRouter}/bin/mc-router -port ${
+                        toString (s.port + stripPortOffset)
+                      } -receive-proxy-protocol -trusted-proxies 127.0.0.1/32 -default 127.0.0.1:${toString s.port}";
                     };
                   }
                 ) (filterAttrs (_: s: needsStripper s) enabledServers);
@@ -298,237 +412,326 @@
               }
             ))
             (mkIf (cfg != { }) (
-            let
-              # Runs as the minecraft user (via the scoped sudo rule below) and
-              # emits a tar stream of the log files an agent needs for
-              # debugging, keeping them as separate files.
-              dumpScripts = mapAttrs (
-                name: _:
-                pkgs.writeShellScriptBin "dump-minecraft-logs-${name}" ''
-                  dir=/srv/minecraft/${name}
-                  tmp=$(${pkgs.coreutils}/bin/mktemp -d)
-                  trap '${pkgs.coreutils}/bin/rm -rf "$tmp"' EXIT
-                  cp "$dir/console.log" "$tmp/" 2>/dev/null
-                  cp "$dir/logs/latest.log" "$tmp/" 2>/dev/null
-                  mkdir -p "$tmp/crash-reports"
-                  ls -t "$dir/crash-reports" 2>/dev/null | head -3 | while read -r f; do
-                    cp "$dir/crash-reports/$f" "$tmp/crash-reports/" 2>/dev/null
-                  done
-                  ${pkgs.gnutar}/bin/tar -C "$tmp" -cf - .
-                ''
-              ) (filterAttrs (_: s: s.enable) cfg);
-            in
-            {
-            users.users.minecraft = {
-              isSystemUser = true;
-              group = "minecraft";
-              home = "/srv/minecraft";
-              createHome = true;
-            };
-            users.groups.minecraft = { };
-
-            # Users in this group get read/write access to all server directories
-            # and can attach to screen sessions without a password.
-            users.groups.minecraft-admin = { };
-
-            # Allow minecraft-admin members to run screen -r as the minecraft
-            # user without a password. Scoped to screen only — not a full sudo.
-            security.sudo.extraRules = [
-              {
-                groups = [ "minecraft-admin" ];
-                runAs = "minecraft";
-                commands = [
-                  {
-                    command = "${pkgs.screen}/bin/screen -r minecraft-*";
-                    options = [ "NOPASSWD" "SETENV" ];
-                  }
-                ] ++ (mapAttrsToList (name: script: {
-                  command = "${script}/bin/dump-minecraft-logs-${name}";
-                  options = [ "NOPASSWD" ];
-                }) dumpScripts);
-              }
-            ];
-
-            networking.firewall.allowedTCPPorts = lib.mapAttrsToList (_: s: s.port) (
-              lib.filterAttrs (_: s: s.openFirewall) cfg
-            );
-
-            networking.firewall.allowedUDPPorts = lib.mapAttrsToList (_: s: s.port) (
-              lib.filterAttrs (_: s: s.openFirewall) cfg
-            );
-
-            systemd.services = mapAttrs' (
-              name: serverCfg:
               let
-                serverDir = "/srv/minecraft/${name}";
-                meta = loaderMeta.${serverCfg.loader};
-                scripts = makeScripts {
-                  inherit (serverCfg)
-                    javaPackage
-                    loader
-                    minecraftVersion
-                    forgeVersion
-                    paperBuild
-                    packwizUrl
-                    ;
-                  inherit serverDir;
-                };
+                # Runs as the minecraft user (via the scoped sudo rule below) and
+                # emits a tar stream of the log files an agent needs for
+                # debugging, keeping them as separate files.
+                dumpScripts = mapAttrs (
+                  name: _:
+                  pkgs.writeShellScriptBin "dump-minecraft-logs-${name}" ''
+                    dir=/srv/minecraft/${name}
+                    tmp=$(${pkgs.coreutils}/bin/mktemp -d)
+                    trap '${pkgs.coreutils}/bin/rm -rf "$tmp"' EXIT
+                    cp "$dir/console.log" "$tmp/" 2>/dev/null
+                    cp "$dir/logs/latest.log" "$tmp/" 2>/dev/null
+                    mkdir -p "$tmp/crash-reports"
+                    ls -t "$dir/crash-reports" 2>/dev/null | head -3 | while read -r f; do
+                      cp "$dir/crash-reports/$f" "$tmp/crash-reports/" 2>/dev/null
+                    done
+                    ${pkgs.gnutar}/bin/tar -C "$tmp" -cf - .
+                  ''
+                ) (filterAttrs (_: s: s.enable) cfg);
               in
-              nameValuePair "minecraft-${name}" {
-                description = "Minecraft Server (${name})";
-                wantedBy = [ "multi-user.target" ];
-                after = [ "network.target" ];
-                path = [
-                  serverCfg.javaPackage
-                  pkgs.bash
-                  pkgs.coreutils
-                  pkgs.curl
-                  pkgs.wget
-                  pkgs.screen
+              {
+                users.users.minecraft = {
+                  isSystemUser = true;
+                  group = "minecraft";
+                  home = "/srv/minecraft";
+                  createHome = true;
+                };
+                users.groups.minecraft = { };
+
+                # Users in this group get read/write access to all server directories
+                # and can attach to screen sessions without a password.
+                users.groups.minecraft-admin = { };
+
+                # Allow minecraft-admin members to run screen -r as the minecraft
+                # user without a password. Scoped to screen only — not a full sudo.
+                security.sudo.extraRules = [
+                  {
+                    groups = [ "minecraft-admin" ];
+                    runAs = "minecraft";
+                    commands = [
+                      {
+                        command = "${pkgs.screen}/bin/screen -r minecraft-*";
+                        options = [
+                          "NOPASSWD"
+                          "SETENV"
+                        ];
+                      }
+                    ]
+                    ++ (mapAttrsToList (name: script: {
+                      command = "${script}/bin/dump-minecraft-logs-${name}";
+                      options = [ "NOPASSWD" ];
+                    }) dumpScripts);
+                  }
                 ];
 
-                preStart = ''
-                  mkdir -p ${serverDir}
-                  chown minecraft:minecraft-admin ${serverDir}
-                  chmod 2770 ${serverDir}
+                networking.firewall.allowedTCPPorts = lib.mapAttrsToList (_: s: s.port) (
+                  lib.filterAttrs (_: s: s.openFirewall) cfg
+                );
 
-                  for file in ops.json whitelist.json banned-players.json banned-ips.json; do
-                    if [ ! -s "${serverCfg.configPath}/$file" ]; then
-                      echo '[]' > "${serverCfg.configPath}/$file"
-                    fi
-                    ln -sf "${serverCfg.configPath}/$file" "${serverDir}/$file"
-                  done
+                networking.firewall.allowedUDPPorts = lib.mapAttrsToList (_: s: s.port) (
+                  lib.filterAttrs (_: s: s.openFirewall) cfg
+                );
 
-                  # Write eula.txt as the service user (minecraft) so we own it and can manage it.
-                  ${optionalString serverCfg.acceptEULA ''
-                    echo 'eula=true' > ${serverDir}/eula.txt
-                  ''}
-
-                  if [ ! -f ${serverDir}/.installed ]; then
-                    cp -r ${self}/server/. ${serverDir}/
-                    # Make everything writable now that we own all files.
-                    chmod -R u+w ${serverDir}
-                    ${scripts.install}/bin/install-server
-                    touch ${serverDir}/.installed
-                  fi
-
-                  ${scripts.update}/bin/update-server
-
-                  # The port option is authoritative: the router maps to it, so the
-                  # server must actually bind it, whatever server.properties says.
-                  if [ -f ${serverDir}/server.properties ] && grep -q '^server-port=' ${serverDir}/server.properties; then
-                    sed -i 's/^server-port=.*/server-port=${toString serverCfg.port}/' ${serverDir}/server.properties
-                  else
-                    echo 'server-port=${toString serverCfg.port}' >> ${serverDir}/server.properties
-                  fi
-
-                  # Behind the router with PROXY protocol on, Paper-family
-                  # servers must accept the header or every connection fails.
-                  ${optionalString
-                    (routerCfg.enable && routerCfg.proxyProtocol
-                      && elem serverCfg.loader [ "paper" "folia" ]) ''
-                    mkdir -p ${serverDir}/config
-                    if grep -q 'proxy-protocol:' ${serverDir}/config/paper-global.yml 2>/dev/null; then
-                      sed -i 's/proxy-protocol: false/proxy-protocol: true/' ${serverDir}/config/paper-global.yml
-                    else
-                      printf 'proxies:\n  proxy-protocol: true\n' >> ${serverDir}/config/paper-global.yml
-                    fi
-                  ''}
-                '';
-
-                script =
+                systemd.services = mapAttrs' (
+                  name: serverCfg:
                   let
-                    cmd = meta.launchCmd {
-                      inherit (serverCfg) javaPackage ramGb;
+                    serverDir = "/srv/minecraft/${name}";
+                    meta = loaderMeta.${serverCfg.loader};
+                    # The cpburnz Prometheus Exporter mod covers these loaders.
+                    promLoader = elem serverCfg.loader [
+                      "forge"
+                      "fabric"
+                      "neoforge"
+                    ];
+                    effMetricsPort = if serverCfg.metricsPort != null then serverCfg.metricsPort else 19565;
+                    # Forge/Fabric read server configs from world/serverconfig;
+                    # NeoForge from config/.
+                    exporterCfgPath =
+                      if serverCfg.loader == "neoforge" then
+                        "${serverDir}/config/prometheus_exporter-server.toml"
+                      else
+                        "${serverDir}/world/serverconfig/prometheus_exporter-server.toml";
+                    # Bind to loopback so only the local status poller can scrape it.
+                    exporterCfg = pkgs.writeText "prometheus_exporter-server.toml" ''
+                      [collector]
+                      jvm = true
+                      mc = true
+                      mc_dimension_tick_errors = "LOG"
+                      mc_entities = true
+                      [web]
+                      listen_address = "127.0.0.1"
+                      listen_port = ${toString effMetricsPort}
+                    '';
+                    scripts = makeScripts {
+                      inherit (serverCfg)
+                        javaPackage
+                        loader
+                        minecraftVersion
+                        forgeVersion
+                        paperBuild
+                        packwizUrl
+                        ;
                       inherit serverDir;
-                      minecraftVersion = serverCfg.minecraftVersion;
-                      loaderVersion = serverCfg.forgeVersion;
                     };
                   in
-                  ''
-                    export SCREENDIR=${serverDir}/.screen
-                    mkdir -p "$SCREENDIR"
-                    chmod 700 "$SCREENDIR"
-                    ${pkgs.screen}/bin/screen -S minecraft-${name} -X quit >/dev/null 2>&1 || true
-                    ${pkgs.screen}/bin/screen -L -Logfile ${serverDir}/console.log -dmS minecraft-${name} \
-                      ${cmd}
-                    sleep 5
-                    while ${pkgs.screen}/bin/screen -ls | grep -q "minecraft-${name}"; do
-                      sleep 2
-                    done
-                  '';
+                  nameValuePair "minecraft-${name}" {
+                    description = "Minecraft Server (${name})";
+                    wantedBy = [ "multi-user.target" ];
+                    after = [ "network.target" ];
+                    path = [
+                      serverCfg.javaPackage
+                      pkgs.bash
+                      pkgs.coreutils
+                      pkgs.curl
+                      pkgs.wget
+                      pkgs.screen
+                    ];
 
-                serviceConfig = {
-                  User = "minecraft";
-                  Group = "minecraft";
-                  WorkingDirectory = serverDir;
-                  PermissionsStartOnly = false;
-                  Restart = "always";
-                  RestartSec = "10s";
-                  TimeoutStopSec = "60s";
-                  KillSignal = "SIGTERM";
-                };
+                    # Don't let a `switch` kick players off a running server: the
+                    # new unit is put in place but only takes effect on the next
+                    # natural restart (reboot / `systemctl restart minecraft-<name>`).
+                    restartIfChanged = false;
+                    stopIfChanged = false;
+
+                    preStart = ''
+                      mkdir -p ${serverDir}
+                      chown minecraft:minecraft-admin ${serverDir}
+                      chmod 2770 ${serverDir}
+
+                      for file in ops.json whitelist.json banned-players.json banned-ips.json; do
+                        if [ ! -s "${serverCfg.configPath}/$file" ]; then
+                          echo '[]' > "${serverCfg.configPath}/$file"
+                        fi
+                        ln -sf "${serverCfg.configPath}/$file" "${serverDir}/$file"
+                      done
+
+                      # Write eula.txt as the service user (minecraft) so we own it and can manage it.
+                      ${optionalString serverCfg.acceptEULA ''
+                        echo 'eula=true' > ${serverDir}/eula.txt
+                      ''}
+
+                      if [ ! -f ${serverDir}/.installed ]; then
+                        cp -r ${self}/server/. ${serverDir}/
+                        # Make everything writable now that we own all files.
+                        chmod -R u+w ${serverDir}
+                        ${scripts.install}/bin/install-server
+                        touch ${serverDir}/.installed
+                      fi
+
+                      ${scripts.update}/bin/update-server
+
+                      ${optionalString serverCfg.exportPrometheus (
+                        if !promLoader then
+                          ''
+                            echo "prometheus-exporter: exportPrometheus is set but loader '${serverCfg.loader}' is not forge/fabric/neoforge — skipping auto-install (use the paper/folia plugin ecosystem instead)." >&2
+                          ''
+                        else
+                          ''
+                            # --- Auto-install the Prometheus Exporter mod (${serverCfg.loader}) ---
+                            # Runs after packwiz sync; packwiz-installer only prunes files
+                            # it manages, so an unmanaged jar dropped here survives.
+                            mods_dir=${serverDir}/mods
+                            mkdir -p "$mods_dir"
+                            if ls "$mods_dir"/*[Pp]rometheus*[Ee]xporter*.jar >/dev/null 2>&1; then
+                              echo "prometheus-exporter: already present, leaving it in place (metricsPort must match its config)."
+                            else
+                              echo "prometheus-exporter: not found, fetching a build for ${serverCfg.minecraftVersion}/${serverCfg.loader}..."
+                              rel_json=$(curl -fsSL "https://api.github.com/repos/cpburnz/minecraft-prometheus-exporter/releases?per_page=100" || true)
+                              tag=$(printf '%s' "$rel_json" | ${pkgs.jq}/bin/jq -r '.[].tag_name' \
+                                | grep -E "^${serverCfg.minecraftVersion}-${serverCfg.loader}-" | sort -V | tail -1)
+                              if [ -n "$tag" ]; then
+                                url=$(printf '%s' "$rel_json" | ${pkgs.jq}/bin/jq -r --arg t "$tag" \
+                                  '.[] | select(.tag_name==$t) | .assets[] | select(.name|endswith(".jar")) | .browser_download_url' | head -1)
+                                if [ -n "$url" ]; then
+                                  echo "prometheus-exporter: downloading $tag ($url)"
+                                  if curl -fsSL "$url" -o "$mods_dir/Prometheus-Exporter-managed.jar"; then
+                                    echo "prometheus-exporter: installed."
+                                  else
+                                    echo "prometheus-exporter: download FAILED — TPS will be unavailable." >&2
+                                    rm -f "$mods_dir/Prometheus-Exporter-managed.jar"
+                                  fi
+                                else
+                                  echo "prometheus-exporter: no .jar asset on release $tag." >&2
+                                fi
+                              else
+                                echo "prometheus-exporter: no release matching ${serverCfg.minecraftVersion}-${serverCfg.loader}-* — TPS will be unavailable." >&2
+                              fi
+                              # Bind the exporter to loopback on our port so only the
+                              # local status poller can scrape it (never exposed).
+                              mkdir -p "$(dirname ${exporterCfgPath})"
+                              cp -f ${exporterCfg} ${exporterCfgPath}
+                              chmod u+w ${exporterCfgPath}
+                            fi
+                          ''
+                      )}
+
+                      # The port option is authoritative: the router maps to it, so the
+                      # server must actually bind it, whatever server.properties says.
+                      if [ -f ${serverDir}/server.properties ] && grep -q '^server-port=' ${serverDir}/server.properties; then
+                        sed -i 's/^server-port=.*/server-port=${toString serverCfg.port}/' ${serverDir}/server.properties
+                      else
+                        echo 'server-port=${toString serverCfg.port}' >> ${serverDir}/server.properties
+                      fi
+
+                      # Behind the router with PROXY protocol on, Paper-family
+                      # servers must accept the header or every connection fails.
+                      ${optionalString
+                        (
+                          routerCfg.enable
+                          && routerCfg.proxyProtocol
+                          && elem serverCfg.loader [
+                            "paper"
+                            "folia"
+                          ]
+                        )
+                        ''
+                          mkdir -p ${serverDir}/config
+                          if grep -q 'proxy-protocol:' ${serverDir}/config/paper-global.yml 2>/dev/null; then
+                            sed -i 's/proxy-protocol: false/proxy-protocol: true/' ${serverDir}/config/paper-global.yml
+                          else
+                            printf 'proxies:\n  proxy-protocol: true\n' >> ${serverDir}/config/paper-global.yml
+                          fi
+                        ''
+                      }
+                    '';
+
+                    script =
+                      let
+                        cmd = meta.launchCmd {
+                          inherit (serverCfg) javaPackage ramGb;
+                          inherit serverDir;
+                          minecraftVersion = serverCfg.minecraftVersion;
+                          loaderVersion = serverCfg.forgeVersion;
+                        };
+                      in
+                      ''
+                        export SCREENDIR=${serverDir}/.screen
+                        mkdir -p "$SCREENDIR"
+                        chmod 700 "$SCREENDIR"
+                        ${pkgs.screen}/bin/screen -S minecraft-${name} -X quit >/dev/null 2>&1 || true
+                        ${pkgs.screen}/bin/screen -L -Logfile ${serverDir}/console.log -dmS minecraft-${name} \
+                          ${cmd}
+                        sleep 5
+                        while ${pkgs.screen}/bin/screen -ls | grep -q "minecraft-${name}"; do
+                          sleep 2
+                        done
+                      '';
+
+                    serviceConfig = {
+                      User = "minecraft";
+                      Group = "minecraft";
+                      WorkingDirectory = serverDir;
+                      PermissionsStartOnly = false;
+                      Restart = "always";
+                      RestartSec = "10s";
+                      TimeoutStopSec = "60s";
+                      KillSignal = "SIGTERM";
+                    };
+                  }
+                ) (filterAttrs (_: s: s.enable) cfg);
+
+                # mode 2770: setgid so new files created inside inherit the
+                # minecraft-admin group; rwxrwx--- restricts access to owner+group only.
+                systemd.tmpfiles.rules = lib.mkIf (cfg != { }) (
+                  (mapAttrsToList (name: serverCfg: "d /srv/minecraft/${name} 2770 minecraft minecraft-admin -") (
+                    lib.filterAttrs (_: s: s.enable) cfg
+                  ))
+                  ++ [
+                    "d /srv/minecraft 2770 minecraft minecraft-admin -"
+                    "d /srv/minecraft/global-config 2770 minecraft minecraft-admin -"
+                  ]
+                );
+
+                environment.systemPackages =
+                  (mapAttrsToList (
+                    name: serverCfg:
+                    pkgs.writeShellScriptBin "console-${name}" ''
+                      while true; do
+                        TERM=xterm SCREENDIR=/srv/minecraft/${name}/.screen sudo -E -u minecraft ${pkgs.screen}/bin/screen -r minecraft-${name}
+                        echo "Screen session detached or unavailable, retrying in 3 seconds..."
+                        sleep 3
+                      done
+                    ''
+                  ) (filterAttrs (_: s: s.enable) cfg))
+                  ++ (mapAttrsToList (
+                    name: serverCfg:
+                    pkgs.writeShellScriptBin "edit-${name}" ''
+                      cd /srv/minecraft/${name}
+                      exec ''${EDITOR:-nano} .
+                    ''
+                  ) (filterAttrs (_: s: s.enable) cfg))
+                  ++ (mapAttrsToList (
+                    name: script:
+                    # Streams a tar of journal + server logs + crash reports to
+                    # stdout (separate files inside), so it works locally and
+                    # over ssh alike:
+                    #   ssh <host> logs-<name> | tar -xC /tmp/minecraft-<name>-logs
+                    pkgs.writeShellScriptBin "logs-${name}" ''
+                      set -e
+                      tmp=$(mktemp -d)
+                      trap 'rm -rf "$tmp"' EXIT
+                      journalctl -u minecraft-${name} -n 300 --no-pager > "$tmp/journal.log" 2>&1 \
+                        || echo "(journal unavailable to this user)" > "$tmp/journal.log"
+                      sudo -u minecraft ${script}/bin/dump-minecraft-logs-${name} \
+                        | ${pkgs.gnutar}/bin/tar -xC "$tmp"
+                      if [ -t 1 ]; then
+                        # Interactive use: unpack to /tmp like mc-logs does locally.
+                        out=/tmp/minecraft-${name}-logs
+                        rm -rf "$out"
+                        mkdir -p "$out"
+                        cp -r "$tmp"/. "$out"/
+                        echo "$out"
+                        ls "$out" "$out/crash-reports" 2>/dev/null
+                      else
+                        ${pkgs.gnutar}/bin/tar -C "$tmp" -cf - .
+                      fi
+                    ''
+                  ) dumpScripts);
               }
-            ) (filterAttrs (_: s: s.enable) cfg);
-
-            # mode 2770: setgid so new files created inside inherit the
-            # minecraft-admin group; rwxrwx--- restricts access to owner+group only.
-            systemd.tmpfiles.rules = lib.mkIf (cfg != { }) (
-              (mapAttrsToList (name: serverCfg: "d /srv/minecraft/${name} 2770 minecraft minecraft-admin -") (
-                lib.filterAttrs (_: s: s.enable) cfg
-              ))
-              ++ [
-                "d /srv/minecraft 2770 minecraft minecraft-admin -"
-                "d /srv/minecraft/global-config 2770 minecraft minecraft-admin -"
-              ]
-            );
-
-            environment.systemPackages =
-              (mapAttrsToList (
-                name: serverCfg:
-                pkgs.writeShellScriptBin "console-${name}" ''
-                  while true; do
-                    TERM=xterm SCREENDIR=/srv/minecraft/${name}/.screen sudo -E -u minecraft ${pkgs.screen}/bin/screen -r minecraft-${name}
-                    echo "Screen session detached or unavailable, retrying in 3 seconds..."
-                    sleep 3
-                  done
-                ''
-              ) (filterAttrs (_: s: s.enable) cfg))
-              ++ (mapAttrsToList (
-                name: serverCfg:
-                pkgs.writeShellScriptBin "edit-${name}" ''
-                  cd /srv/minecraft/${name}
-                  exec ''${EDITOR:-nano} .
-                ''
-              ) (filterAttrs (_: s: s.enable) cfg))
-              ++ (mapAttrsToList (
-                name: script:
-                # Streams a tar of journal + server logs + crash reports to
-                # stdout (separate files inside), so it works locally and
-                # over ssh alike:
-                #   ssh <host> logs-<name> | tar -xC /tmp/minecraft-<name>-logs
-                pkgs.writeShellScriptBin "logs-${name}" ''
-                  set -e
-                  tmp=$(mktemp -d)
-                  trap 'rm -rf "$tmp"' EXIT
-                  journalctl -u minecraft-${name} -n 300 --no-pager > "$tmp/journal.log" 2>&1 \
-                    || echo "(journal unavailable to this user)" > "$tmp/journal.log"
-                  sudo -u minecraft ${script}/bin/dump-minecraft-logs-${name} \
-                    | ${pkgs.gnutar}/bin/tar -xC "$tmp"
-                  if [ -t 1 ]; then
-                    # Interactive use: unpack to /tmp like mc-logs does locally.
-                    out=/tmp/minecraft-${name}-logs
-                    rm -rf "$out"
-                    mkdir -p "$out"
-                    cp -r "$tmp"/. "$out"/
-                    echo "$out"
-                    ls "$out" "$out/crash-reports" 2>/dev/null
-                  else
-                    ${pkgs.gnutar}/bin/tar -C "$tmp" -cf - .
-                  fi
-                ''
-              ) dumpScripts);
-            }))
+            ))
           ];
         };
 
