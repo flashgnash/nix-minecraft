@@ -181,6 +181,7 @@ let
         else
           ''
             <div class="pack-section">
+              <h3 class="pack-section-title">Modpack</h3>
               <div class="pack-head">
                 <span class="pack-avatar"><img class="pack-icon-img" alt="" />${loaderIcon s.loader}</span>
                 <div class="pack-head-text">
@@ -354,6 +355,7 @@ let
 
       /* Modpack section: pack identity + tab strip + one draggable panel per launcher */
       .pack-section { margin-top: .9rem; padding-top: .7rem; border-top: 1px solid var(--border); }
+      .pack-section-title { margin: 0 0 .55rem; font-size: .95rem; font-weight: 700; }
       .pack-head { display: flex; align-items: flex-start; gap: .7rem; margin-bottom: .6rem; }
       .pack-avatar {
         flex: 0 0 auto; width: 44px; height: 44px; display: flex;
