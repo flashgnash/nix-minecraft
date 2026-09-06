@@ -430,11 +430,16 @@ let
       .mini-icon .pack-icon-glyph { width: 26px; height: 26px; object-fit: contain; }
       .hero-text { overflow: hidden; }
       .hero-title { font-size: 1.05rem; font-weight: 700; margin-bottom: .55rem; }
-      /* Buttons clear the floated icon: full panel width, side by side */
-      .hero-btns { display: flex; align-items: center; flex-wrap: nowrap; gap: .5rem; min-width: 0; clear: both; padding-top: .65rem; }
-      .hero-btns .btn { white-space: nowrap; }
-      .hero-btns .btn.primary { flex: 0 0 auto; }
-      .hero-btns .btn.subtle { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      /* Buttons clear the floated icon: full panel width, equal flex halves
+         (a lone button stretches the whole way). Identical font/padding/height
+         — the subtle variant differs only in colour. */
+      .hero-btns { display: flex; align-items: stretch; flex-wrap: nowrap; gap: .5rem; min-width: 0; clear: both; padding-top: .65rem; }
+      .hero-btns .btn {
+        flex: 1 1 0; min-width: 0; text-align: center;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        display: flex; align-items: center; justify-content: center;
+        font-size: .95rem; padding: .55rem 1.1rem;
+      }
       .hero-hint { color: var(--dim); font-size: .78rem; margin-top: .5rem; }
 
       /* Buttons */
@@ -450,8 +455,7 @@ let
         font-weight: 700; padding: .55rem 1.1rem; font-size: .95rem;
       }
       .btn.primary:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
-      .btn .btn-sub { font-weight: 400; font-size: .78rem; opacity: .75; }
-      .btn.subtle { color: var(--dim); font-size: .82rem; padding: .4rem .75rem; }
+      .btn.subtle { color: var(--dim); }
       .btn.subtle:hover { color: var(--text); }
 
       .muted { color: var(--dim); }
