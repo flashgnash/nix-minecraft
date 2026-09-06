@@ -118,8 +118,19 @@
               default = null;
               example = "myhost.tailnet.ts.net";
               description = ''
-                External domain Grafana is reached through (sets root_url so
-                redirects and cookies work behind the proxy).
+                Domain Grafana is reached at (sets root_url so redirects and
+                cookies work). Plain http on <grafanaPort>.
+              '';
+            };
+            exposeInterfaces = mkOption {
+              type = types.listOf types.str;
+              default = [ ];
+              example = [ "tailscale0" ];
+              description = ''
+                Interfaces to open grafanaPort on. When non-empty Grafana
+                binds all addresses but the firewall only admits these
+                interfaces — e.g. [ "tailscale0" ] gives tailnet-only access
+                governed by tailscale ACLs. Empty = loopback only.
               '';
             };
           };
@@ -440,19 +451,20 @@
                   ];
                 };
 
-                # Loopback only: reachability (and therefore who can even see
-                # the dashboard link on the modpack site) is decided by
-                # whatever proxies this — e.g. `tailscale serve` + tailnet ACLs.
+                # Reachability is decided by the firewall: with
+                # exposeInterfaces = [ "tailscale0" ] only tailnet peers your
+                # ACLs admit can connect (plus loopback); everything else is
+                # default-denied. Same pattern as the moonlight-web relay.
                 services.grafana = {
                   enable = true;
                   settings = {
                     server = {
-                      http_addr = "127.0.0.1";
+                      http_addr = if metricsCfg.exposeInterfaces == [ ] then "127.0.0.1" else "0.0.0.0";
                       http_port = metricsCfg.grafanaPort;
                     }
                     // optionalAttrs (metricsCfg.grafanaDomain != null) {
                       domain = metricsCfg.grafanaDomain;
-                      root_url = "https://${metricsCfg.grafanaDomain}/";
+                      root_url = "http://${metricsCfg.grafanaDomain}:${toString metricsCfg.grafanaPort}/";
                     };
                     # Anyone who can reach it may view; tailnet ACLs are the
                     # access control. Editing still needs the admin login.
@@ -491,6 +503,10 @@
                     ];
                   };
                 };
+
+                networking.firewall.interfaces = genAttrs metricsCfg.exposeInterfaces (_: {
+                  allowedTCPPorts = [ metricsCfg.grafanaPort ];
+                });
 
                 # Runs as the grafana user, so the key lands 0600 in its own
                 # state dir. head reads a finite amount first — no SIGPIPE.
