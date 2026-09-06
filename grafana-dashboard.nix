@@ -267,23 +267,11 @@ in
       };
       options = { };
     }
-    (ts "JVM heap"
-      {
-        x = 0;
-        y = 33;
-        w = 12;
-        h = 8;
-      }
-      "bytes"
-      [
-        (q "A" ''jvm_memory_bytes_used{area="heap", ${sel}}'' "{{server}} used")
-        (q "B" ''jvm_memory_bytes_max{area="heap", ${sel}}'' "{{server}} max")
-      ]
-      { }
-    )
+    # GC on the left, in line with the other time-correlated sparklines
+    # (TPS, dropped items); heap on the right — less about the timeline.
     (ts "GC time share"
       {
-        x = 12;
+        x = 0;
         y = 33;
         w = 12;
         h = 8;
@@ -293,6 +281,20 @@ in
         (q "A" ''100 * sum by (server, gc) (rate(jvm_gc_collection_seconds_sum{${sel}}[5m]))''
           "{{server}} {{gc}}"
         )
+      ]
+      { }
+    )
+    (ts "JVM heap"
+      {
+        x = 12;
+        y = 33;
+        w = 12;
+        h = 8;
+      }
+      "bytes"
+      [
+        (q "A" ''jvm_memory_bytes_used{area="heap", ${sel}}'' "{{server}} used")
+        (q "B" ''jvm_memory_bytes_max{area="heap", ${sel}}'' "{{server}} max")
       ]
       { }
     )
