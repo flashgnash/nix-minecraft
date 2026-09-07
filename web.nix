@@ -60,6 +60,11 @@ let
       file = "-curseforge.zip";
       desc = "Import into the CurseForge launcher";
     };
+    mods = {
+      label = "Mods .zip";
+      file = "-mods.zip";
+      desc = "Plain zip of every mod jar, pre-downloaded — for manual installs";
+    };
   };
 
   # Every client card carries its own launcher tab strip; picking a tab
@@ -93,6 +98,14 @@ let
       heroBtn = "Download for CurseForge";
       heroHint = "Once downloaded, import the zip in the CurseForge app.";
     }
+    {
+      key = "mods";
+      label = "Manual";
+      primary = "mods";
+      heroTitle = "Just the mod jars, ready to drop in";
+      heroBtn = "Download mods .zip";
+      heroHint = "For manual installs: delete your old mods folder, then extract the zip into the instance's .minecraft. Re-download after every pack update.";
+    }
   ];
 
   tabStrip = ''
@@ -109,6 +122,7 @@ let
     prism = "prism.svg";
     mrpack = "modrinth.png";
     curseforge = "curseforge.png";
+    mods = "zip.svg";
   };
 
   # Card icon precedence (applied client-side): the server-icon.png (favicon
@@ -160,6 +174,7 @@ let
         if address != null then
           ''
             <span class="addr-row">
+              <span class="addr-label">IP:</span>
               <code class="copy addr" onclick="selectText(this)" title="click to select, then copy">${address}</code>
               <button class="copy-btn" onclick="copyAddr(this)" title="copy address" aria-label="copy address">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="9" y="9" width="11" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8" fill="none" stroke="currentColor" stroke-width="2"/></svg>
@@ -189,10 +204,10 @@ let
                   <div class="pack-desc" data-k="pack-desc" hidden></div>
                   <div class="pack-meta">
                     <span class="chip" data-k="pack-version" hidden></span>
-                    <span class="chip" data-k="mod-count" hidden></span>
+                    <button class="chip chip-toggle" data-k="mod-count" onclick="toggleMods(this)" hidden></button>
                   </div>
                   <details class="mod-list" data-k="mod-list" hidden>
-                    <summary>Mod list</summary>
+                    <summary hidden>Mod list</summary>
                     <input class="mod-search" type="search" placeholder="filter mods…" oninput="filterMods(this)" />
                     <ul class="mods" data-k="mods"></ul>
                   </details>
@@ -318,6 +333,7 @@ let
       /* Subtle join address on its own full-width row under the head */
       .addr-line { margin-top: .3rem; }
       .addr-row { display: flex; align-items: center; gap: .35rem; min-width: 0; }
+      .addr-label { flex: 0 0 auto; font-size: .78rem; font-weight: 700; color: var(--dim); }
       .addr {
         display: inline-block; font-size: .78rem; color: var(--dim);
         background: var(--inset); padding: .15rem .5rem; border-radius: 6px; cursor: pointer;
@@ -351,7 +367,8 @@ let
       .lv::after { content: ""; display: block; clear: both; }
       body[data-launcher="prism"] .lv-prism,
       body[data-launcher="mrpack"] .lv-mrpack,
-      body[data-launcher="curseforge"] .lv-curseforge { display: block; }
+      body[data-launcher="curseforge"] .lv-curseforge,
+      body[data-launcher="mods"] .lv-mods { display: block; }
 
       /* Modpack section: pack identity + tab strip + one draggable panel per launcher */
       .pack-section { margin-top: .9rem; padding-top: .7rem; border-top: 1px solid var(--border); }
@@ -363,21 +380,20 @@ let
         background: var(--inset); border: 1px solid var(--border); border-radius: 8px;
       }
       .pack-avatar .pack-icon-glyph { width: 28px; height: 28px; object-fit: contain; }
-      .pack-head-text { min-width: 0; }
+      .pack-head-text { min-width: 0; flex: 1; }
       .pack-name { margin: 0; font-size: 1.05rem; }
       .pack-desc { color: var(--dim); font-size: .82rem; margin-top: .1rem; }
-      .pack-meta { display: flex; gap: .4rem; margin-top: .3rem; flex-wrap: wrap; }
+      .pack-meta { display: flex; gap: .4rem; margin-top: .3rem; flex-wrap: wrap; justify-content: flex-end; }
       .pack-meta .chip:empty { display: none; }
+      /* The mod-count badge doubles as the mod-list dropdown toggle */
+      button.chip-toggle { font: inherit; font-size: .78rem; cursor: pointer; }
+      .chip-toggle::after { content: " ▸"; color: var(--accent); }
+      .chip-toggle.open::after { content: " ▾"; }
+      .chip-toggle:hover { color: var(--text); border-color: var(--accent-dark); }
 
-      /* Searchable, collapsible mod list (lives in the pack description) */
+      /* Searchable, collapsible mod list (opened from the mod-count badge) */
       details.mod-list { margin-top: .35rem; color: var(--dim); font-size: .82rem; }
-      details.mod-list summary {
-        cursor: pointer; color: var(--dim); font-weight: 700; list-style: none; padding: .1rem 0;
-      }
-      details.mod-list summary:hover { color: var(--text); }
-      details.mod-list summary::-webkit-details-marker { display: none; }
-      details.mod-list summary::before { content: "▸ "; color: var(--accent); }
-      details.mod-list[open] summary::before { content: "▾ "; }
+      details.mod-list summary { display: none; }
       .mod-search {
         width: 100%; margin: .4rem 0; padding: .4rem .6rem; font: inherit; font-size: .85rem;
         background: var(--inset); color: var(--text);
@@ -518,6 +534,14 @@ let
         </ol>
         <p>The CurseForge zip doesn't self-update — check back here after pack updates.</p>
       </div>
+      <div class="lv lv-mods">
+        <ol>
+          <li>Click <b>Download mods .zip</b> — it contains every mod jar, already downloaded.</li>
+          <li>In your instance's <code>.minecraft</code>, delete the old <code>mods</code> folder (updates change and remove jars, not just add them).</li>
+          <li>Extract the zip there — it unpacks to a fresh <code>mods</code> folder. Make sure your loader and Minecraft version match the pack's card.</li>
+        </ol>
+        <p>Nothing self-updates on this path — re-download the zip after every pack update.</p>
+      </div>
       <p>Copy the server address under a pack's title to join.</p>
     </details>
 
@@ -559,6 +583,15 @@ let
         e.dataTransfer.setData("text/uri-list", url);
       }
 
+      // The mod-count badge is the dropdown toggle; the list itself still
+      // opens in its usual spot under the pack description.
+      function toggleMods(btn) {
+        var details = btn.closest(".pack-head-text").querySelector("details.mod-list");
+        if (!details || details.hidden) return;
+        details.open = !details.open;
+        btn.classList.toggle("open", details.open);
+      }
+
       function filterMods(input) {
         var q = input.value.toLowerCase();
         var items = input.parentElement.querySelectorAll(".mods li");
@@ -571,7 +604,7 @@ let
       // tried and abandoned — browsers' Local Network Access policy silently
       // blocks public sites from fetching tailnet (CGNAT) addresses, so a
       // probe can't distinguish "no access" from "browser refused to ask".
-      var LAUNCHERS = ["prism", "mrpack", "curseforge"];
+      var LAUNCHERS = ["prism", "mrpack", "curseforge", "mods"];
       function setCookie(k, v) { document.cookie = k + "=" + v + ";path=/;max-age=31536000;samesite=lax"; }
       function getCookie(k) {
         var m = document.cookie.match("(^|;)\\s*" + k + "\\s*=\\s*([^;]+)");
@@ -639,7 +672,6 @@ let
                 var modsKey = pack.mods.join("|");
                 if (ml.dataset.mods !== modsKey) {
                   ml.dataset.mods = modsKey;
-                  ml.querySelector("summary").textContent = "Mod list (" + pack.mods.length + ")";
                   var ul = ml.querySelector(".mods");
                   ul.textContent = "";
                   for (var mi = 0; mi < pack.mods.length; mi++) {

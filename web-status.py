@@ -14,6 +14,7 @@
 # Stdlib only (socket, urllib, json) so it needs no Python packages.
 
 import base64
+import hashlib
 import html
 import json
 import os
@@ -449,10 +450,14 @@ PACK_META_TTL = 3600
 _pack_meta_cache = {}
 
 
-def _fetch_text(url, timeout=5.0):
+def _fetch_bytes(url, timeout=5.0):
     req = urllib.request.Request(url, headers={"User-Agent": "minecraft-web"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", "replace")
+        return r.read()
+
+
+def _fetch_text(url, timeout=5.0):
+    return _fetch_bytes(url, timeout).decode("utf-8", "replace")
 
 
 def pack_meta(packwiz_url):
@@ -466,7 +471,10 @@ def pack_meta(packwiz_url):
     try:
         import tomllib
 
-        pack = tomllib.loads(_fetch_text(packwiz_url))
+        # Raw bytes: the sha256 must be byte-exact with what preStart's
+        # `curl | sha256sum` recorded, so hash before any decode.
+        raw = _fetch_bytes(packwiz_url)
+        pack = tomllib.loads(raw.decode("utf-8", "replace"))
         base = packwiz_url.rsplit("/", 1)[0]
         mods = []
         try:
@@ -485,6 +493,8 @@ def pack_meta(packwiz_url):
             "description": pack.get("description"),
             "mod_count": len(mods) if mods else None,
             "mods": sorted(mods),
+            # Consumed by the update auto-restart; pack.toml is public anyway.
+            "raw_sha256": hashlib.sha256(raw).hexdigest(),
         }
     except Exception:
         # keep serving a stale copy if the refresh fails
@@ -492,6 +502,61 @@ def pack_meta(packwiz_url):
             return cached["data"]
     _pack_meta_cache[packwiz_url] = {"t": time.time(), "data": data}
     return data
+
+
+# ---- pack-update auto-restart ------------------------------------------------
+#
+# Servers configured with autoRestartOnUpdate get restarted (via a sudo rule
+# scoped to exactly that systemctl command) when the remote pack.toml's hash
+# diverges from the one the server's last start applied — but only while the
+# server is up and has been empty for its idle window, so nobody is kicked.
+# The restarted server's preStart runs packwiz and refreshes the applied-hash
+# marker; one attempt is made per remote revision (persisted), so a fetch
+# failure or broken update can't restart-loop the server.
+
+RESTART_STATE_PATH = os.path.join(STATE_DIR, ".autorestart-state.json")
+_restart_last_active = {}  # name -> ts of the last poll that wasn't "online and empty"
+_poller_started = time.time()
+
+
+def maybe_auto_restart(server_conf, entry, remote_hash):
+    ar = server_conf.get("autoRestart")
+    if not ar:
+        return
+    name = server_conf["name"]
+    now = time.time()
+    # Counting starts at poller startup: a fresh poller must observe a full
+    # idle window itself before it may restart anything.
+    last_active = _restart_last_active.setdefault(name, _poller_started)
+    if not (entry.get("online") and entry.get("players_online") == 0):
+        _restart_last_active[name] = now
+        return
+    if now - last_active < ar.get("idleSeconds", 900) or not remote_hash:
+        return
+    try:
+        with open(ar["appliedHashFile"]) as f:
+            applied = f.read().strip()
+    except OSError:
+        return
+    if not applied or applied == remote_hash:
+        return
+    state = load_json(RESTART_STATE_PATH, {})
+    if state.get(name) == remote_hash:
+        return  # this revision was already attempted — don't loop
+    state[name] = remote_hash
+    atomic_write_json(RESTART_STATE_PATH, state)
+    print(
+        "auto-restart: %s empty %dmin with pack update pending (%s.. -> %s..) — restarting"
+        % (name, int(now - last_active) // 60, applied[:12], remote_hash[:12]),
+        file=sys.stderr,
+    )
+    try:
+        subprocess.run(
+            ar["restartCmd"], timeout=180, check=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+        )
+    except Exception as e:
+        print("auto-restart: %s failed: %s" % (name, e), file=sys.stderr)
 
 
 # ---- main loop ---------------------------------------------------------------
@@ -549,6 +614,8 @@ def poll_once(servers):
                         entry["tps"] = round(max(0.0, min(20.0, dc / dt)), 1)
                 new_tps_state[name] = {"count": count, "t": now}
             maybe_profile_lag(s, entry["tps"])
+
+        maybe_auto_restart(s, entry, (entry["pack"] or {}).get("raw_sha256"))
 
         # Only client packs carry a pack icon.
         if s.get("iconUrls"):

@@ -345,6 +345,30 @@
                         Requires services.minecraft-web (the poller).
                       '';
                     };
+                    autoRestartOnUpdate = mkOption {
+                      type = types.bool;
+                      default = false;
+                      description = ''
+                        Restart the server automatically when the remote
+                        pack.toml no longer matches the revision this run
+                        applied — but only once the server has been empty for
+                        autoRestartIdleMinutes, so nobody is ever kicked. The
+                        restart's preStart then runs packwiz and picks the
+                        update up. Driven by the minecraft-web status poller
+                        (which must be enabled) via a sudo rule scoped to
+                        `systemctl restart minecraft-<name>.service`; one
+                        attempt per pack revision, so a failing update can't
+                        restart-loop the server.
+                      '';
+                    };
+                    autoRestartIdleMinutes = mkOption {
+                      type = types.int;
+                      default = 15;
+                      description = ''
+                        How long the server must have been continuously empty
+                        before an update auto-restart may happen.
+                      '';
+                    };
                     metricsPort = mkOption {
                       type = types.nullOr types.port;
                       default = null;
@@ -434,6 +458,20 @@
                         rconPort = s.port + rconPortOffset;
                         rconPasswordFile = "/var/lib/minecraft-rcon/${name}";
                       }
+                      // optionalAttrs s.autoRestartOnUpdate {
+                        autoRestart = {
+                          idleSeconds = s.autoRestartIdleMinutes * 60;
+                          appliedHashFile = "/srv/minecraft/${name}/.applied-pack-hash";
+                          # Exact argv, absolute paths: must match the sudo rule.
+                          restartCmd = [
+                            "/run/wrappers/bin/sudo"
+                            "-n"
+                            "${pkgs.systemd}/bin/systemctl"
+                            "restart"
+                            "minecraft-${name}.service"
+                          ];
+                        };
+                      }
                       ) enabledWebServers;
                     }
                     // statusExtra
@@ -504,6 +542,24 @@
                     ExecStart = "${pkgs.python3}/bin/python3 ${./web-status.py} ${statusConfig}";
                   };
                 };
+                # The poller may restart a server to apply a pending pack
+                # update (only when it has been empty for the configured idle
+                # window). Scoped to exactly `systemctl restart` of the
+                # opted-in units — not a general sudo.
+                security.sudo.extraRules =
+                  let
+                    autoRestartServers = filterAttrs (_: s: s.autoRestartOnUpdate) enabledWebServers;
+                  in
+                  mkIf (autoRestartServers != { }) [
+                    {
+                      users = [ "minecraft-web" ];
+                      commands = mapAttrsToList (name: _: {
+                        command = "${pkgs.systemd}/bin/systemctl restart minecraft-${name}.service";
+                        options = [ "NOPASSWD" ];
+                      }) autoRestartServers;
+                    }
+                  ];
+
                 users.users.minecraft-web = {
                   isSystemUser = true;
                   group = "minecraft-web";
@@ -837,6 +893,10 @@
                     assertion = !(any (s: s.enable && s.sparkOnLag) (attrValues cfg)) || webCfg.enable;
                     message = "sparkOnLag needs services.minecraft-web enabled — its status poller is what watches TPS and runs the profiles.";
                   }
+                  {
+                    assertion = !(any (s: s.enable && s.autoRestartOnUpdate) (attrValues cfg)) || webCfg.enable;
+                    message = "autoRestartOnUpdate needs services.minecraft-web enabled — its status poller performs the update check and the restart.";
+                  }
                 ];
 
                 users.users.minecraft = {
@@ -968,6 +1028,20 @@
                       fi
 
                       ${scripts.update}/bin/update-server
+
+                      ${optionalString serverCfg.autoRestartOnUpdate ''
+                        # Record the pack revision this start applied (byte-exact
+                        # sha256 of the remote pack.toml). The status poller
+                        # compares it against the live remote copy and restarts
+                        # us — empty server only — when they diverge. On fetch
+                        # failure the old marker is kept: no marker churn, no
+                        # spurious restarts.
+                        pack_tmp=$(mktemp)
+                        if curl -fsSL ${escapeShellArg serverCfg.packwizUrl} -o "$pack_tmp"; then
+                          sha256sum "$pack_tmp" | cut -d' ' -f1 > ${serverDir}/.applied-pack-hash
+                        fi
+                        rm -f "$pack_tmp"
+                      ''}
 
                       ${optionalString serverCfg.exportPrometheus (
                         if !promLoader then
