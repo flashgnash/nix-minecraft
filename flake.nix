@@ -300,6 +300,40 @@
                       default = 4;
                       description = "RAM allocated to the server in GB";
                     };
+                    minRamGb = mkOption {
+                      type = types.nullOr types.int;
+                      default = null;
+                      description = ''
+                        When set, the heap grows from this floor instead of
+                        being pinned at ramGb (Xms=Xmx + AlwaysPreTouch), and
+                        idle memory is returned to the OS — for boxes hosting
+                        several servers whose combined ramGb wouldn't fit
+                        pinned. With Aikar/G1 this enables a periodic idle GC
+                        cycle (JEP 346) to drive the uncommit; combine with
+                        zgc for more aggressive shrinking.
+                      '';
+                    };
+                    zgc = mkOption {
+                      type = types.bool;
+                      default = false;
+                      description = ''
+                        Use ZGC instead of Aikar's G1 flags (overrides
+                        aikarFlags). ZGC uncommits idle heap natively and
+                        promptly, at the cost of some extra CPU/memory
+                        overhead vs G1 — best for lightly-loaded co-hosted
+                        servers. Requires a javaPackage of JDK 23+ so
+                        generational ZGC is the default.
+                      '';
+                    };
+                    softMaxRamGb = mkOption {
+                      type = types.nullOr types.int;
+                      default = null;
+                      description = ''
+                        With zgc: the heap size ZGC tries to stay under
+                        (SoftMaxHeapSize), bursting up to ramGb only under
+                        real pressure. Ignored without zgc.
+                      '';
+                    };
                     aikarFlags = mkOption {
                       type = types.bool;
                       default = true;
@@ -1162,7 +1196,7 @@
                           inherit serverDir;
                           jvmFlags = import ./jvm-flags.nix {
                             inherit lib;
-                            inherit (serverCfg) ramGb;
+                            inherit (serverCfg) ramGb minRamGb zgc softMaxRamGb;
                             aikar = serverCfg.aikarFlags;
                           };
                           minecraftVersion = serverCfg.minecraftVersion;
