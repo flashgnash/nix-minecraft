@@ -573,6 +573,7 @@ def poll_once(servers):
             "name": name,
             "loader": s.get("loader"),
             "address": s.get("address"),
+            "lazy": bool(s.get("lazy")),
             "online": False,
             "motd": None,
             "players_online": None,

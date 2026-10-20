@@ -329,6 +329,8 @@ let
       }
       .card.online .status-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
       .card.offline .status-dot { background: var(--critical); box-shadow: none; }
+      .card.asleep { opacity: .82; }
+      .card.asleep .status-dot { background: var(--dim); box-shadow: none; }
 
       /* Subtle join address on its own full-width row under the head */
       .addr-line { margin-top: .3rem; }
@@ -639,10 +641,12 @@ let
           (d.servers || []).forEach(function (s) {
             var box = document.querySelector('.card[data-name="' + s.name + '"]');
             if (!box) return;
+            var asleep = !s.online && !!s.lazy;
             box.classList.toggle("online", !!s.online);
-            box.classList.toggle("offline", !s.online);
+            box.classList.toggle("offline", !s.online && !asleep);
+            box.classList.toggle("asleep", asleep);
             var motd = box.querySelector("[data-k=motd]");
-            if (motd) motd.textContent = s.online ? (s.motd || "") : "Offline";
+            if (motd) motd.textContent = s.online ? (s.motd || "") : asleep ? "Asleep \u2014 join to wake it up" : "Offline";
             var pl = box.querySelector("[data-k=players]");
             if (pl) {
               pl.textContent = (s.players_online == null ? "—" : s.players_online) +

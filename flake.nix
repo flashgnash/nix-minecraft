@@ -216,6 +216,32 @@
                 minecraft-admin group; summarise with `mc-logins`.
               '';
             };
+            lazy = {
+              idleMinutes = mkOption {
+                type = types.ints.positive;
+                default = 15;
+                description = "How long a lazy server must be empty before it is stopped.";
+              };
+              bootTimeoutMinutes = mkOption {
+                type = types.ints.positive;
+                default = 10;
+                description = ''
+                  How long a woken server may take to become ready (RCON
+                  answering). The router shows the loading MOTD for that long;
+                  a server still not ready after this is stopped again.
+                '';
+              };
+              asleepMotd = mkOption {
+                type = types.str;
+                default = "Asleep - join to wake it up";
+                description = "Server-list MOTD for a stopped lazy server.";
+              };
+              loadingMotd = mkOption {
+                type = types.str;
+                default = "Starting up - reconnect in a minute or two";
+                description = "Server-list MOTD while a lazy server boots.";
+              };
+            };
           };
 
           options.services.minecraft-servers = mkOption {
@@ -403,6 +429,21 @@
                         before an update auto-restart may happen.
                       '';
                     };
+                    lazy = mkOption {
+                      type = types.bool;
+                      default = false;
+                      description = ''
+                        Run on demand: not started at boot, started when a
+                        player connects through the router, stopped again once
+                        it has been empty for services.minecraft-router.lazy.idleMinutes.
+                        The server list shows the router's asleep/loading MOTD
+                        meanwhile; the joining client usually times out during
+                        the boot and just reconnects. Requires
+                        services.minecraft-router (its webhook auto-scaler drives
+                        the wake) and turns on loopback RCON (used for readiness
+                        and the player count).
+                      '';
+                    };
                     metricsPort = mkOption {
                       type = types.nullOr types.port;
                       default = null;
@@ -483,6 +524,7 @@
                       {
                         inherit name;
                         inherit (s) port loader packwizUrl;
+                        lazy = routerCfg.enable && s.lazy;
                         address = addressOf name;
                         metricsPort = scrapePortOf s;
                         iconUrls = if isClientLoader s then iconUrlsOf s else [ ];
@@ -813,6 +855,58 @@
                 loginLogPort = 25580;
                 loginLogFile = "/var/lib/minecraft-login-log/logins.jsonl";
                 loginArgs = optionalString routerCfg.recordLogins " -webhook-url http://127.0.0.1:${toString loginLogPort}/ -webhook-require-user";
+
+                # Wake-on-join: with any lazy server, mc-router's webhook
+                # auto-scaler calls lazy-scaler.py for every route. The webhook
+                # timeout covers a whole boot so the loading MOTD stays up for
+                # all of it (the scaler answers once RCON is up).
+                lazyServers = filterAttrs (_: s: s.lazy) enabledServers;
+                anyLazy = lazyServers != { };
+                scalerPort = 25581;
+                bootSeconds = routerCfg.lazy.bootTimeoutMinutes * 60;
+                systemctl = "${pkgs.systemd}/bin/systemctl";
+                sudoCmd = verb: name: [
+                  "/run/wrappers/bin/sudo"
+                  "-n"
+                  systemctl
+                  verb
+                  "minecraft-${name}.service"
+                ];
+                scalerConfig = pkgs.writeText "minecraft-lazy-scaler.json" (
+                  builtins.toJSON {
+                    port = scalerPort;
+                    inherit systemctl;
+                    idleSeconds = routerCfg.lazy.idleMinutes * 60;
+                    bootTimeoutSeconds = bootSeconds;
+                    servers = mapAttrsToList (
+                      name: s:
+                      {
+                        inherit name;
+                        inherit (s) lazy;
+                        unit = "minecraft-${name}.service";
+                        # Whatever mc-router has configured for this server's
+                        # route (the stripper when one sits in front).
+                        backends = unique [
+                          "127.0.0.1:${toString (backendPort s)}"
+                          "127.0.0.1:${toString s.port}"
+                        ];
+                      }
+                      // optionalAttrs s.lazy {
+                        rconPort = s.port + rconPortOffset;
+                        rconPasswordFile = "/var/lib/minecraft-rcon/${name}";
+                        startCmd = sudoCmd "start" name;
+                        stopCmd = sudoCmd "stop" name;
+                      }
+                    ) enabledServers;
+                  }
+                );
+                lazyArgs = optionalString anyLazy (
+                  " -auto-scale-webhook-url http://127.0.0.1:${toString scalerPort}/"
+                  + " -auto-scale-webhook-timeout ${toString (bootSeconds + 30)}s"
+                  + " -auto-scale-webhook-wake-timeout 30s"
+                  + " -auto-scale-asleep-motd ${escapeShellArg routerCfg.lazy.asleepMotd}"
+                  + " -auto-scale-loading-motd ${escapeShellArg routerCfg.lazy.loadingMotd}"
+                );
               in
               {
                 assertions = [
@@ -825,12 +919,30 @@
                   mc-router = {
                     description = "Minecraft hostname router (mc-router)";
                     wantedBy = [ "multi-user.target" ];
-                    after = [ "network.target" ];
+                    after = [ "network.target" ] ++ optional anyLazy "minecraft-lazy-scaler.service";
+                    # With the scaler wired in, every login goes through it
+                    # (a failed webhook aborts the connection), so pull it up
+                    # alongside the router.
+                    wants = optional anyLazy "minecraft-lazy-scaler.service";
                     serviceConfig = {
                       DynamicUser = true;
                       Restart = "always";
                       RestartSec = "5s";
-                      ExecStart = "${mcRouter}/bin/mc-router -port ${toString routerCfg.port} -mapping ${escapeShellArg mappings}${proxyArg}${defaultArg}${loginArgs}";
+                      ExecStart = "${mcRouter}/bin/mc-router -port ${toString routerCfg.port} -mapping ${escapeShellArg mappings}${proxyArg}${defaultArg}${loginArgs}${lazyArgs}";
+                    };
+                  };
+                }
+                // optionalAttrs anyLazy {
+                  minecraft-lazy-scaler = {
+                    description = "Wake/sleep lazy Minecraft servers (mc-router auto-scale webhook)";
+                    wantedBy = [ "multi-user.target" ];
+                    after = [ "network.target" ];
+                    serviceConfig = {
+                      User = "minecraft-scaler";
+                      Group = "minecraft-scaler";
+                      Restart = "always";
+                      RestartSec = "2s";
+                      ExecStart = "${pkgs.python3}/bin/python3 ${./lazy-scaler.py} ${scalerConfig}";
                     };
                   };
                 }
@@ -853,21 +965,63 @@
                 }
                 // mapAttrs' (
                   name: s:
-                  nameValuePair "mc-router-strip-${name}" {
-                    description = "PROXY protocol stripper for Minecraft server ${name}";
-                    wantedBy = [ "multi-user.target" ];
-                    after = [ "network.target" ];
-                    serviceConfig = {
-                      DynamicUser = true;
-                      Restart = "always";
-                      RestartSec = "5s";
-                      ExecStart = "${mcRouter}/bin/mc-router -port ${
-                        toString (s.port + stripPortOffset)
-                      } -receive-proxy-protocol -trusted-proxies 127.0.0.1/32 -default 127.0.0.1:${toString s.port}";
-                    };
-                  }
+                  nameValuePair "mc-router-strip-${name}" (
+                    {
+                      description = "PROXY protocol stripper for Minecraft server ${name}";
+                      wantedBy = [ (if s.lazy then "minecraft-${name}.service" else "multi-user.target") ];
+                      after = [ "network.target" ];
+                      serviceConfig = {
+                        DynamicUser = true;
+                        Restart = "always";
+                        RestartSec = "5s";
+                        ExecStart = "${mcRouter}/bin/mc-router -port ${
+                          toString (s.port + stripPortOffset)
+                        } -receive-proxy-protocol -trusted-proxies 127.0.0.1/32 -default 127.0.0.1:${toString s.port}";
+                      };
+                    }
+                    # A lazy server's stripper lives and dies with the server: a
+                    # stripper that keeps listening while the server sleeps makes
+                    # the router's dial succeed, so it would never serve the
+                    # asleep MOTD.
+                    // optionalAttrs s.lazy {
+                      bindsTo = [ "minecraft-${name}.service" ];
+                      after = [
+                        "network.target"
+                        "minecraft-${name}.service"
+                      ];
+                    }
+                  )
                 ) (filterAttrs (_: s: needsStripper s) enabledServers);
                 networking.firewall.allowedTCPPorts = mkIf routerCfg.openFirewall [ routerCfg.port ];
+
+                users.users.minecraft-scaler = mkIf anyLazy {
+                  isSystemUser = true;
+                  group = "minecraft-scaler";
+                  # Reads the RCON passwords (/var/lib/minecraft-rcon is
+                  # setgid minecraft-web, files 640).
+                  extraGroups = [ "minecraft-web" ];
+                };
+                users.groups.minecraft-scaler = mkIf anyLazy { };
+                users.groups.minecraft-web = mkIf anyLazy { };
+
+                # Exactly start/stop of the lazy units, nothing else.
+                security.sudo.extraRules = mkIf anyLazy [
+                  {
+                    users = [ "minecraft-scaler" ];
+                    commands = concatLists (
+                      mapAttrsToList (name: _: [
+                        {
+                          command = "${systemctl} start minecraft-${name}.service";
+                          options = [ "NOPASSWD" ];
+                        }
+                        {
+                          command = "${systemctl} stop minecraft-${name}.service";
+                          options = [ "NOPASSWD" ];
+                        }
+                      ]) lazyServers
+                    );
+                  }
+                ];
 
                 # Summarise who connected from where (unique player/IP pairs,
                 # counts, first/last seen). `mc-logins --raw` = full stream.
@@ -930,6 +1084,10 @@
                   {
                     assertion = !(any (s: s.enable && s.autoRestartOnUpdate) (attrValues cfg)) || webCfg.enable;
                     message = "autoRestartOnUpdate needs services.minecraft-web enabled — its status poller performs the update check and the restart.";
+                  }
+                  {
+                    assertion = !(any (s: s.enable && s.lazy) (attrValues cfg)) || routerCfg.enable;
+                    message = "lazy servers need services.minecraft-router enabled — its webhook auto-scaler is what wakes them on join.";
                   }
                 ];
 
@@ -1019,7 +1177,8 @@
                   in
                   nameValuePair "minecraft-${name}" {
                     description = "Minecraft Server (${name})";
-                    wantedBy = [ "multi-user.target" ];
+                    # Lazy servers start on demand (lazy-scaler.py), not at boot.
+                    wantedBy = optional (!serverCfg.lazy) "multi-user.target";
                     after = [ "network.target" ];
                     path = [
                       serverCfg.javaPackage
@@ -1146,8 +1305,8 @@
                           ''
                       )}
 
-                      ${optionalString serverCfg.sparkOnLag ''
-                        # --- RCON for the lag auto-profiler ---
+                      ${optionalString (serverCfg.sparkOnLag || serverCfg.lazy) ''
+                        # --- RCON for the lag auto-profiler / lazy scaler ---
                         # Loopback only in practice: the firewall never opens the
                         # rcon port. preStart runs as the minecraft user, so the
                         # directory comes from tmpfiles (setgid minecraft-web:
@@ -1235,9 +1394,14 @@
                   (mapAttrsToList (name: serverCfg: "d /srv/minecraft/${name} 2770 minecraft minecraft-admin -") (
                     lib.filterAttrs (_: s: s.enable) cfg
                   ))
-                  ++ optionals (webCfg.enable && any (s: s.enable && s.sparkOnLag) (attrValues cfg)) [
+                  ++ optionals
+                    (
+                      (webCfg.enable && any (s: s.enable && s.sparkOnLag) (attrValues cfg))
+                      || (routerCfg.enable && any (s: s.enable && s.lazy) (attrValues cfg))
+                    )
+                    [
                     # setgid: rcon passwords created inside inherit minecraft-web
-                    # so the status poller can read them (files land 640).
+                    # so the status poller and lazy scaler can read them (640).
                     "d /var/lib/minecraft-rcon 2750 minecraft minecraft-web -"
                   ]
                   ++ [
